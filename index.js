@@ -71,6 +71,11 @@ function ensureGuild(guildId) {
   cfg.mandateRoleIds = Array.isArray(cfg.mandateRoleIds) ? cfg.mandateRoleIds : [];
   cfg.mandateUserIds = Array.isArray(cfg.mandateUserIds) ? cfg.mandateUserIds : [];
   cfg.mandates = Array.isArray(cfg.mandates) ? cfg.mandates : [];
+  cfg.arrestCommandChannelId = cfg.arrestCommandChannelId ?? null;
+  cfg.arrestInfoChannelId = cfg.arrestInfoChannelId ?? null;
+  cfg.arrestRoleIds = Array.isArray(cfg.arrestRoleIds) ? cfg.arrestRoleIds : [];
+  cfg.arrestUserIds = Array.isArray(cfg.arrestUserIds) ? cfg.arrestUserIds : [];
+  cfg.arrests = Array.isArray(cfg.arrests) ? cfg.arrests : [];
   cfg.robloxNickChannelId = cfg.robloxNickChannelId ?? null;
   cfg.robloxNickVerifiedRoleId = cfg.robloxNickVerifiedRoleId ?? null;
   cfg.kartotekaChannelId = cfg.kartotekaChannelId ?? null;
@@ -123,6 +128,13 @@ function hasMandatePermission(member, cfg) {
   return member.roles?.cache?.some(role => cfg.mandateRoleIds.includes(role.id)) ?? false;
 }
 
+function hasArrestPermission(member, cfg) {
+  if (!member) return false;
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
+  if (cfg.arrestUserIds.includes(member.id)) return true;
+  return member.roles?.cache?.some(role => cfg.arrestRoleIds.includes(role.id)) ?? false;
+}
+
 function hasKartotekaPermission(member, cfg) {
   if (!member) return false;
   if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
@@ -133,6 +145,15 @@ function hasKartotekaPermission(member, cfg) {
 function generateMandateId() {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let output = 'MANDAT-';
+  for (let i = 0; i < 6; i++) {
+    output += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return output;
+}
+
+function generateArrestId() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let output = 'ARREST-';
   for (let i = 0; i < 6; i++) {
     output += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
@@ -163,6 +184,10 @@ function getMandateStatusLabel(status) {
   if (status === 'zaplacony') return 'Mandat oplacony';
   if (status === 'zamkniety') return 'Zamkniety';
   return 'Oczekuje na decyzje';
+}
+
+function getArrestTypeLabel(type) {
+  return type === 'wiezienie' ? 'Pojscie do wiezienia' : 'Areszt';
 }
 
 function getMandateComponents(
@@ -264,6 +289,26 @@ function buildMandateEmbed(mandate) {
     .setTimestamp(new Date(mandate.createdAt));
 }
 
+function buildArrestEmbed(arrest) {
+  const fields = [
+    { name: 'ID aresztu', value: arrest.id, inline: true },
+    { name: 'Kto aresztuje', value: `<@${arrest.issuerId}>`, inline: true },
+    { name: 'Kogo aresztowano', value: `<@${arrest.targetId}>`, inline: true },
+    { name: 'Typ', value: getArrestTypeLabel(arrest.kind), inline: true },
+    { name: 'Powod', value: arrest.reason, inline: false }
+  ];
+
+  if (arrest.kind === 'wiezienie') {
+    fields.push({ name: 'Czas', value: arrest.duration || 'Nie podano', inline: true });
+  }
+
+  return new EmbedBuilder()
+    .setColor(Colors.DarkRed)
+    .setTitle('Areszt / Wiezienie')
+    .addFields(fields)
+    .setTimestamp(new Date(arrest.createdAt));
+}
+
 function getOrCreateKartoteka(cfg, userData) {
   let kartoteka = cfg.kartoteki.find(entry => entry.userId === userData.id);
   if (!kartoteka) {
@@ -308,6 +353,29 @@ function syncMandateToKartoteka(cfg, mandate, userData) {
   return kartoteka;
 }
 
+function syncArrestToKartoteka(cfg, arrest, userData) {
+  const kartoteka = getOrCreateKartoteka(cfg, userData);
+  let entry = kartoteka.entries.find(item => item.type === 'arrest' && item.arrestId === arrest.id);
+
+  if (!entry) {
+    entry = {
+      id: generateKartotekaEntryId(),
+      type: 'arrest',
+      arrestId: arrest.id,
+      createdAt: arrest.createdAt,
+      updatedAt: Date.now()
+    };
+    kartoteka.entries.unshift(entry);
+  }
+
+  entry.issuerId = arrest.issuerId;
+  entry.reason = arrest.reason;
+  entry.kind = arrest.kind;
+  entry.duration = arrest.duration ?? null;
+  entry.updatedAt = Date.now();
+  return kartoteka;
+}
+
 function formatDateTime(timestamp) {
   return new Intl.DateTimeFormat('pl-PL', {
     day: '2-digit',
@@ -320,6 +388,7 @@ function formatDateTime(timestamp) {
 
 function buildKartotekaEmbed(kartoteka) {
   const mandateEntries = kartoteka.entries.filter(entry => entry.type === 'mandat');
+  const arrestEntries = kartoteka.entries.filter(entry => entry.type === 'arrest');
   const paidCount = mandateEntries.filter(entry => entry.status === 'zaplacony').length;
   const totalPenaltyPoints = mandateEntries.reduce(
     (sum, entry) => sum + (typeof entry.penaltyPoints === 'number' ? entry.penaltyPoints : 0),
@@ -332,7 +401,8 @@ function buildKartotekaEmbed(kartoteka) {
     { name: 'Zalozono', value: formatDateTime(kartoteka.createdAt), inline: true },
     { name: 'Liczba mandatow', value: String(mandateEntries.length), inline: true },
     { name: 'Mandaty oplacone', value: String(paidCount), inline: true },
-    { name: 'Suma punktow karnych', value: String(totalPenaltyPoints), inline: true }
+    { name: 'Suma punktow karnych', value: String(totalPenaltyPoints), inline: true },
+    { name: 'Liczba aresztow', value: String(arrestEntries.length), inline: true }
   ];
 
   fields.push({
@@ -358,6 +428,26 @@ function buildKartotekaEmbed(kartoteka) {
       ? `Historia mandatow (ostatnie ${latestEntries.length} z ${mandateEntries.length})`
       : 'Historia mandatow',
     value: historyValue.slice(0, 1024),
+    inline: false
+  });
+
+  const latestArrests = arrestEntries.slice(0, 8);
+  const arrestHistoryValue = latestArrests.length
+    ? latestArrests.map(entry => {
+      const durationText = entry.kind === 'wiezienie' ? ` | ${entry.duration || 'bez czasu'}` : '';
+      return [
+        `**${entry.arrestId}** | ${getArrestTypeLabel(entry.kind)}${durationText}`,
+        `Powod: ${entry.reason}`,
+        `Wystawil: <@${entry.issuerId}> | ${formatDateTime(entry.createdAt)}`
+      ].join('\n');
+    }).join('\n\n')
+    : 'Brak wpisow aresztowych.';
+
+  fields.push({
+    name: latestArrests.length < arrestEntries.length
+      ? `Historia aresztow (ostatnie ${latestArrests.length} z ${arrestEntries.length})`
+      : 'Historia aresztow',
+    value: arrestHistoryValue.slice(0, 1024),
     inline: false
   });
 
@@ -490,6 +580,53 @@ async function registerCommands() {
       ]
     },
     {
+      name: 'arrestkanal',
+      description: 'Ustaw kanal komend aresztow i kanal informacji o aresztach',
+      options: [
+        { name: 'komendy', description: 'Kanal gdzie nadaje sie areszty', type: 7, required: true },
+        { name: 'informacje', description: 'Kanal gdzie przychodza informacje o aresztach', type: 7, required: true }
+      ]
+    },
+    {
+      name: 'arrestperrmison',
+      description: 'Lista lub nadanie permisji do aresztow',
+      options: [
+        {
+          name: 'akcja',
+          description: 'list/dodaj/usun',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'list', value: 'list' },
+            { name: 'dodaj', value: 'dodaj' },
+            { name: 'usun', value: 'usun' }
+          ]
+        },
+        { name: 'rola', description: 'Rola z permisja do aresztow', type: 8, required: false },
+        { name: 'uzytkownik', description: 'Uzytkownik z permisja do aresztow', type: 6, required: false }
+      ]
+    },
+    {
+      name: 'arrest',
+      description: 'Nadaj areszt lub pojscie do wiezienia',
+      options: [
+        { name: 'kto', description: 'Kto aresztuje', type: 6, required: true },
+        { name: 'komu', description: 'Kogo aresztujesz', type: 6, required: true },
+        { name: 'powod', description: 'Za co aresztujesz', type: 3, required: true },
+        {
+          name: 'rodzaj',
+          description: 'Areszt czy pojscie do wiezienia',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'areszt', value: 'areszt' },
+            { name: 'pojscie do wiezienia', value: 'wiezienie' }
+          ]
+        },
+        { name: 'czas', description: 'Na ile czasu, jesli to wiezienie', type: 3, required: false }
+      ]
+    },
+    {
       name: 'sprawdziloscmandatow',
       description: 'Sprawdz ilosc mandatow i zarobek z mandatow dla osoby z Discorda i daty',
       options: [
@@ -560,6 +697,20 @@ async function registerCommands() {
       options: [
         { name: 'idmandatu', description: 'ID mandatu do usuniecia', type: 3, required: true }
       ]
+    },
+    {
+      name: 'edytojkartotekaarreszt',
+      description: 'Edytuj wpis aresztu w kartotece po ID aresztu',
+      options: [
+        { name: 'idaresztu', description: 'ID aresztu do edycji', type: 3, required: true }
+      ]
+    },
+    {
+      name: 'usunkartotekaarreszt',
+      description: 'Usun areszt po ID z kartoteki i z listy aresztow',
+      options: [
+        { name: 'idaresztu', description: 'ID aresztu do usuniecia', type: 3, required: true }
+      ]
     }
   ];
 
@@ -619,6 +770,51 @@ client.on('interactionCreate', async interaction => {
         saveConfig();
         const changed = [role ? `<@&${role.id}>` : null, user ? `<@${user.id}>` : null].filter(Boolean).join(', ');
         await interaction.reply({ content: `Zaktualizowano permisje mandatow dla: ${changed}`, flags: 64 });
+        return;
+      }
+
+      if (interaction.commandName === 'arrestkanal') {
+        if (!isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Tej komendy moga uzywac tylko wybrane osoby.', flags: 64 });
+          return;
+        }
+        const commandChannel = interaction.options.getChannel('komendy', true);
+        const infoChannel = interaction.options.getChannel('informacje', true);
+        if (!isSupportedTextChannel(commandChannel) || !isSupportedTextChannel(infoChannel)) {
+          await interaction.reply({ content: 'Wybierz kanaly tekstowe.', flags: 64 });
+          return;
+        }
+        cfg.arrestCommandChannelId = commandChannel.id;
+        cfg.arrestInfoChannelId = infoChannel.id;
+        saveConfig();
+        await interaction.reply({
+          content: `Areszty: <#${cfg.arrestCommandChannelId}> -> <#${cfg.arrestInfoChannelId}>`,
+          flags: 64
+        });
+        return;
+      }
+
+      if (interaction.commandName === 'arrestperrmison') {
+        if (!isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Tej komendy moga uzywac tylko wybrane osoby.', flags: 64 });
+          return;
+        }
+        const action = interaction.options.getString('akcja', true);
+        const role = interaction.options.getRole('rola');
+        const user = interaction.options.getUser('uzytkownik');
+        if (action === 'list') {
+          await interaction.reply({ content: formatPermissionList(cfg.arrestRoleIds, cfg.arrestUserIds), flags: 64 });
+          return;
+        }
+        if (!role && !user) {
+          await interaction.reply({ content: 'Podaj role albo uzytkownika.', flags: 64 });
+          return;
+        }
+        if (role) updatePermissionEntries(cfg.arrestRoleIds, role.id, action);
+        if (user) updatePermissionEntries(cfg.arrestUserIds, user.id, action);
+        saveConfig();
+        const changed = [role ? `<@&${role.id}>` : null, user ? `<@${user.id}>` : null].filter(Boolean).join(', ');
+        await interaction.reply({ content: `Zaktualizowano permisje aresztow dla: ${changed}`, flags: 64 });
         return;
       }
 
@@ -846,6 +1042,157 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.reply({
           content: `Usunieto mandat ${mandateId} z kartoteki i z listy mandatow.`,
+          flags: 64
+        });
+        return;
+      }
+
+      if (interaction.commandName === 'edytojkartotekaarreszt') {
+        if (!hasKartotekaPermission(interaction.member, cfg) && !hasArrestPermission(interaction.member, cfg) && !isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Brak uprawnien do edycji aresztow w kartotece.', flags: 64 });
+          return;
+        }
+
+        const arrestId = interaction.options.getString('idaresztu', true).trim().toUpperCase();
+        const arrest = cfg.arrests.find(item => item.id === arrestId);
+        if (!arrest) {
+          await interaction.reply({ content: 'Nie znalazlem aresztu o tym ID.', flags: 64 });
+          return;
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(`kartoteka_edytuj_arrest_modal:${arrestId}`)
+          .setTitle('Edytuj areszt w kartotece');
+
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('arrest_reason')
+          .setLabel('Powod aresztu')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setValue((arrest.reason || '').slice(0, 4000));
+
+        const typeInput = new TextInputBuilder()
+          .setCustomId('arrest_kind')
+          .setLabel('Rodzaj')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setPlaceholder('areszt albo wiezienie')
+          .setValue(arrest.kind === 'wiezienie' ? 'wiezienie' : 'areszt');
+
+        const durationInput = new TextInputBuilder()
+          .setCustomId('arrest_duration')
+          .setLabel('Czas')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setPlaceholder('Np. 30 minut, 2 godziny, 3 dni')
+          .setValue((arrest.duration || '').slice(0, 100));
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(reasonInput),
+          new ActionRowBuilder().addComponents(typeInput),
+          new ActionRowBuilder().addComponents(durationInput)
+        );
+
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.commandName === 'usunkartotekaarreszt') {
+        if (!hasKartotekaPermission(interaction.member, cfg) && !hasArrestPermission(interaction.member, cfg) && !isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Brak uprawnien do usuwania aresztow z kartoteki.', flags: 64 });
+          return;
+        }
+
+        const arrestId = interaction.options.getString('idaresztu', true).trim().toUpperCase();
+        const arrestIndex = cfg.arrests.findIndex(item => item.id === arrestId);
+        if (arrestIndex === -1) {
+          await interaction.reply({ content: 'Nie znalazlem aresztu o tym ID.', flags: 64 });
+          return;
+        }
+
+        cfg.arrests.splice(arrestIndex, 1);
+        for (const kartoteka of cfg.kartoteki) {
+          kartoteka.entries = (kartoteka.entries || []).filter(entry => !(entry.type === 'arrest' && entry.arrestId === arrestId));
+        }
+        saveConfig();
+
+        await interaction.reply({
+          content: `Usunieto areszt ${arrestId} z kartoteki i z listy aresztow.`,
+          flags: 64
+        });
+        return;
+      }
+
+      if (interaction.commandName === 'arrest') {
+        if (!cfg.arrestCommandChannelId || !cfg.arrestInfoChannelId) {
+          await interaction.reply({ content: 'Najpierw ustaw kanaly komenda /arrestkanal.', flags: 64 });
+          return;
+        }
+        if (interaction.channelId !== cfg.arrestCommandChannelId) {
+          await interaction.reply({ content: `Areszty nadajesz tylko w <#${cfg.arrestCommandChannelId}>.`, flags: 64 });
+          return;
+        }
+        if (!hasArrestPermission(interaction.member, cfg)) {
+          await interaction.reply({ content: 'Brak uprawnien do wystawiania aresztow.', flags: 64 });
+          return;
+        }
+
+        const issuer = interaction.options.getUser('kto', true);
+        const target = interaction.options.getUser('komu', true);
+        const reason = interaction.options.getString('powod', true).trim();
+        const kind = interaction.options.getString('rodzaj', true);
+        const duration = (interaction.options.getString('czas') || '').trim();
+
+        if (issuer.id !== interaction.user.id) {
+          await interaction.reply({ content: 'W polu kto mozesz wskazac tylko siebie.', flags: 64 });
+          return;
+        }
+        if (issuer.id === target.id) {
+          await interaction.reply({ content: 'Nie mozesz nadac aresztu samemu sobie.', flags: 64 });
+          return;
+        }
+        if (!reason) {
+          await interaction.reply({ content: 'Musisz podac powod aresztu.', flags: 64 });
+          return;
+        }
+        if (kind === 'wiezienie' && !duration) {
+          await interaction.reply({ content: 'Jesli to pojscie do wiezienia, podaj czas.', flags: 64 });
+          return;
+        }
+
+        const arrestId = generateArrestId();
+        const arrestRecord = {
+          id: arrestId,
+          issuerId: issuer.id,
+          issuerDisplayName: interaction.guild.members.cache.get(issuer.id)?.displayName ?? issuer.globalName ?? issuer.username,
+          issuerUsername: issuer.username,
+          targetId: target.id,
+          targetDisplayName: interaction.guild.members.cache.get(target.id)?.displayName ?? target.globalName ?? target.username,
+          targetUsername: target.username,
+          reason,
+          kind,
+          duration: kind === 'wiezienie' ? duration : null,
+          createdAt: Date.now()
+        };
+
+        cfg.arrests.unshift(arrestRecord);
+        cfg.arrests = cfg.arrests.slice(0, 200);
+        syncArrestToKartoteka(cfg, arrestRecord, {
+          id: target.id,
+          username: target.username,
+          displayName: interaction.guild.members.cache.get(target.id)?.displayName ?? target.globalName ?? target.username
+        });
+        saveConfig();
+
+        const infoChannel = await interaction.client.channels.fetch(cfg.arrestInfoChannelId).catch(() => null);
+        if (isSupportedTextChannel(infoChannel) && typeof infoChannel.send === 'function') {
+          await infoChannel.send({
+            embeds: [buildArrestEmbed(arrestRecord)]
+          }).catch(() => {});
+        }
+
+        await interaction.reply({
+          content: `Wystawiono ${kind === 'wiezienie' ? 'pojscie do wiezienia' : 'areszt'} ${arrestId} dla <@${target.id}>.`,
           flags: 64
         });
         return;
@@ -1135,6 +1482,55 @@ client.on('interactionCreate', async interaction => {
           content: `Zapisano zmiany dla mandatu ${mandateId}.`,
           embeds: kartoteka ? [buildKartotekaEmbed(kartoteka)] : [buildMandateEmbed({ ...mandate, statusLabel: getMandateStatusLabel(mandate.status) })],
           components: kartoteka ? getKartotekaViewComponents(mandate.targetId) : [],
+          flags: 64
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('kartoteka_edytuj_arrest_modal:')) {
+        if (!hasKartotekaPermission(interaction.member, cfg) && !hasArrestPermission(interaction.member, cfg) && !isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Brak uprawnien do edycji aresztow w kartotece.', flags: 64 });
+          return;
+        }
+
+        const arrestId = interaction.customId.split(':')[1];
+        const arrest = cfg.arrests.find(item => item.id === arrestId);
+        if (!arrest) {
+          await interaction.reply({ content: 'Nie znalazlem aresztu o tym ID.', flags: 64 });
+          return;
+        }
+
+        const newReason = interaction.fields.getTextInputValue('arrest_reason').trim();
+        const rawKind = interaction.fields.getTextInputValue('arrest_kind').trim().toLowerCase();
+        const newDuration = interaction.fields.getTextInputValue('arrest_duration').trim();
+
+        if (!newReason) {
+          await interaction.reply({ content: 'Powod aresztu nie moze byc pusty.', flags: 64 });
+          return;
+        }
+
+        const normalizedKind = ['wiezienie', 'wiezienie.'].includes(rawKind) ? 'wiezienie' : 'areszt';
+        if (normalizedKind === 'wiezienie' && !newDuration) {
+          await interaction.reply({ content: 'Dla pojscia do wiezienia podaj czas.', flags: 64 });
+          return;
+        }
+
+        arrest.reason = newReason;
+        arrest.kind = normalizedKind;
+        arrest.duration = normalizedKind === 'wiezienie' ? newDuration : null;
+
+        syncArrestToKartoteka(cfg, arrest, {
+          id: arrest.targetId,
+          username: arrest.targetUsername ?? 'Nieznany',
+          displayName: arrest.targetDisplayName ?? arrest.targetUsername ?? 'Nieznany'
+        });
+        saveConfig();
+
+        const kartoteka = cfg.kartoteki.find(entry => entry.userId === arrest.targetId);
+        await interaction.reply({
+          content: `Zapisano zmiany dla aresztu ${arrestId}.`,
+          embeds: kartoteka ? [buildKartotekaEmbed(kartoteka)] : [buildArrestEmbed(arrest)],
+          components: kartoteka ? getKartotekaViewComponents(arrest.targetId) : [],
           flags: 64
         });
         return;
