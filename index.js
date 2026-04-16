@@ -71,6 +71,8 @@ function ensureGuild(guildId) {
   cfg.mandateRoleIds = Array.isArray(cfg.mandateRoleIds) ? cfg.mandateRoleIds : [];
   cfg.mandateUserIds = Array.isArray(cfg.mandateUserIds) ? cfg.mandateUserIds : [];
   cfg.mandates = Array.isArray(cfg.mandates) ? cfg.mandates : [];
+  cfg.robloxNickChannelId = cfg.robloxNickChannelId ?? null;
+  cfg.robloxNickVerifiedRoleId = cfg.robloxNickVerifiedRoleId ?? null;
   cfg.kartotekaChannelId = cfg.kartotekaChannelId ?? null;
   cfg.kartotekaPanelMessageId = cfg.kartotekaPanelMessageId ?? null;
   cfg.kartotekaRoleIds = Array.isArray(cfg.kartotekaRoleIds) ? cfg.kartotekaRoleIds : [];
@@ -88,6 +90,11 @@ function isConfigOwner(userId) {
 
 function isSupportedTextChannel(channel) {
   return !!channel && typeof channel.isTextBased === 'function' && channel.isTextBased();
+}
+
+function isValidRobloxNick(input) {
+  const raw = (input || '').trim();
+  return /^[A-Za-z0-9_]{3,20}$/.test(raw);
 }
 
 function formatPermissionList(roleIds = [], userIds = []) {
@@ -500,6 +507,21 @@ async function registerCommands() {
       ]
     },
     {
+      name: 'ustawkanaldonickow',
+      description: 'Ustaw kanal i role odblokowujaca po wpisaniu nicku Roblox',
+      options: [
+        { name: 'kanal', description: 'Kanal, na ktorym gracze wpisuja nick Roblox', type: 7, required: true },
+        { name: 'rola', description: 'Rola, ktora odblokuje serwer po wpisaniu nicku', type: 8, required: true }
+      ]
+    },
+    {
+      name: 'nickroblox',
+      description: 'Ustaw swoj nick Roblox i odblokuj serwer',
+      options: [
+        { name: 'nick', description: 'Twoj nick z Roblox', type: 3, required: true }
+      ]
+    },
+    {
       name: 'kartotekakanal',
       description: 'Ustaw kanal panelu kartoteki',
       options: [
@@ -597,6 +619,90 @@ client.on('interactionCreate', async interaction => {
         saveConfig();
         const changed = [role ? `<@&${role.id}>` : null, user ? `<@${user.id}>` : null].filter(Boolean).join(', ');
         await interaction.reply({ content: `Zaktualizowano permisje mandatow dla: ${changed}`, flags: 64 });
+        return;
+      }
+
+      if (interaction.commandName === 'ustawkanaldonickow') {
+        if (!isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Tej komendy moga uzywac tylko wybrane osoby.', flags: 64 });
+          return;
+        }
+
+        const nickChannel = interaction.options.getChannel('kanal', true);
+        const verifiedRole = interaction.options.getRole('rola', true);
+        if (!isSupportedTextChannel(nickChannel)) {
+          await interaction.reply({ content: 'Wybierz kanal tekstowy.', flags: 64 });
+          return;
+        }
+
+        cfg.robloxNickChannelId = nickChannel.id;
+        cfg.robloxNickVerifiedRoleId = verifiedRole.id;
+        saveConfig();
+
+        const instruction = [
+          'Witaj na serwerze Komisariat Policji x Fordon RP.',
+          'Aby odblokowac reszte kanalow, wpisz tutaj komende:',
+          '`/nickroblox nick:TwojNickRoblox`',
+          'Po poprawnym wpisaniu nicku bot zmieni Twoj wyswietlany nick i nada role odblokowujaca serwer.'
+        ].join('\n');
+
+        await nickChannel.send({ content: instruction }).catch(() => {});
+        await interaction.reply({
+          content: `Kanal do nickow Roblox: <#${cfg.robloxNickChannelId}>. Rola po wpisaniu nicku: <@&${cfg.robloxNickVerifiedRoleId}>.`,
+          flags: 64
+        });
+        return;
+      }
+
+      if (interaction.commandName === 'nickroblox') {
+        if (!cfg.robloxNickChannelId || !cfg.robloxNickVerifiedRoleId) {
+          await interaction.reply({ content: 'Administracja nie ustawila jeszcze kanalu i roli do nickow Roblox.', flags: 64 });
+          return;
+        }
+        if (interaction.channelId !== cfg.robloxNickChannelId) {
+          await interaction.reply({ content: `Nick Roblox ustawisz tylko w <#${cfg.robloxNickChannelId}>.`, flags: 64 });
+          return;
+        }
+
+        const member = interaction.member;
+        if (member?.roles?.cache?.has(cfg.robloxNickVerifiedRoleId)) {
+          await interaction.reply({ content: 'Masz juz ustawiony nick Roblox i odblokowany serwer.', flags: 64 });
+          return;
+        }
+
+        const robloxNick = interaction.options.getString('nick', true).trim();
+        if (!isValidRobloxNick(robloxNick)) {
+          await interaction.reply({ content: 'Nick Roblox moze miec tylko litery, cyfry i `_`, od 3 do 20 znakow.', flags: 64 });
+          return;
+        }
+
+        const verifiedRole =
+          interaction.guild.roles.cache.get(cfg.robloxNickVerifiedRoleId)
+          ?? await interaction.guild.roles.fetch(cfg.robloxNickVerifiedRoleId).catch(() => null);
+
+        if (!verifiedRole) {
+          await interaction.reply({ content: 'Nie znalazlem ustawionej roli po wpisaniu nicku. Popros administracje o ponowne ustawienie `/ustawkanaldonickow`.', flags: 64 });
+          return;
+        }
+
+        try {
+          await member.setNickname(robloxNick, 'Ustawienie nicku Roblox');
+        } catch {
+          await interaction.reply({ content: 'Nie moglem zmienic Twojego nicku. Bot musi miec `Manage Nicknames` i najwyzsza role nad Twoja.', flags: 64 });
+          return;
+        }
+
+        try {
+          await member.roles.add(verifiedRole, 'Gracz ustawil nick Roblox');
+        } catch {
+          await interaction.reply({ content: 'Nick ustawilem, ale nie moglem nadac roli odblokowujacej. Bot musi miec `Manage Roles` i role wyzej od tej roli.', flags: 64 });
+          return;
+        }
+
+        await interaction.reply({
+          content: `Ustawiono Twoj nick na **${robloxNick}** i odblokowano dostep do serwera.`,
+          flags: 64
+        });
         return;
       }
 
