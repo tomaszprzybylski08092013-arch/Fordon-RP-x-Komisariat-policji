@@ -25,9 +25,7 @@ const state = {
   activityActor: 'all',
   panelUsers: [],
   mandateCaseSignature: '',
-  dismissedMandateCaseSignature: '',
-  mandateParticipantCandidates: [],
-  activeMandateCaseId: ''
+  dismissedMandateCaseSignature: ''
 };
 
 const authOverlay = document.getElementById('authOverlay');
@@ -92,8 +90,6 @@ const mandateCaseModal = document.getElementById('mandateCaseModal');
 const mandateCaseBackdrop = document.getElementById('mandateCaseBackdrop');
 const closeMandateCaseButton = document.getElementById('closeMandateCaseButton');
 const mandateCaseList = document.getElementById('mandateCaseList');
-const mandateParticipantSelect = document.getElementById('mandateParticipantSelect');
-const addMandateParticipantButton = document.getElementById('addMandateParticipantButton');
 
 const statCardTemplate = document.getElementById('statCardTemplate');
 const listCardTemplate = document.getElementById('listCardTemplate');
@@ -389,17 +385,13 @@ function getRelevantMandateCases() {
   if (!state.snapshot || !state.sessionDiscordUserId) return [];
   return state.snapshot.mandates.filter(mandate =>
     mandate.status !== 'zamkniety' &&
-    (
-      mandate.targetId === state.sessionDiscordUserId ||
-      mandate.issuerId === state.sessionDiscordUserId ||
-      mandate.participants?.some(participant => participant.id === state.sessionDiscordUserId)
-    )
+    (mandate.targetId === state.sessionDiscordUserId || mandate.issuerId === state.sessionDiscordUserId)
   );
 }
 
 function getMandateCaseSignature(cases = []) {
   return cases
-    .map(mandate => `${mandate.id}:${mandate.status}:${mandate.panelMessages?.length || 0}:${mandate.participants?.length || 0}`)
+    .map(mandate => `${mandate.id}:${mandate.status}`)
     .join('|');
 }
 
@@ -442,68 +434,9 @@ function closeMandateCaseModal(persistDismiss = true) {
   }
 }
 
-function getActiveMandateCase() {
-  const cases = getRelevantMandateCases();
-  if (!cases.length) return null;
-  if (state.activeMandateCaseId) {
-    const matched = cases.find(mandate => mandate.id === state.activeMandateCaseId);
-    if (matched) return matched;
-  }
-  return cases[0];
-}
-
-async function loadMandateParticipantCandidates(mandateId) {
-  if (!mandateId) {
-    mandateParticipantSelect.innerHTML = '';
-    addMandateParticipantButton.disabled = true;
-    return;
-  }
-  const result = await api(`/api/dashboard/${state.guildId}/mandates/${mandateId}/participants/candidates`);
-  state.mandateParticipantCandidates = result.candidates || [];
-  mandateParticipantSelect.innerHTML = '';
-
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = state.mandateParticipantCandidates.length ? 'Wybierz osobe' : 'Brak osob do dodania';
-  mandateParticipantSelect.appendChild(placeholder);
-
-  for (const person of state.mandateParticipantCandidates) {
-    const option = document.createElement('option');
-    option.value = person.id;
-    option.textContent = person.label;
-    mandateParticipantSelect.appendChild(option);
-  }
-
-  addMandateParticipantButton.disabled = state.mandateParticipantCandidates.length === 0;
-}
-
-async function addMandateParticipant(mandateId, userId) {
-  await api(`/api/dashboard/${state.guildId}/mandates/${mandateId}/participants`, {
-    method: 'POST',
-    body: JSON.stringify({ userId })
-  });
-  await fetchDashboard({ manual: false });
-}
-
-async function removeMandateParticipant(mandateId, userId) {
-  await api(`/api/dashboard/${state.guildId}/mandates/${mandateId}/participants/${userId}`, {
-    method: 'DELETE'
-  });
-  await fetchDashboard({ manual: false });
-}
-
-async function sendMandateCaseMessage(mandateId, content) {
-  await api(`/api/dashboard/${state.guildId}/mandates/${mandateId}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({ content })
-  });
-  await fetchDashboard({ manual: false });
-}
-
 function renderMandateCaseModal() {
   if (!mandateCaseList) return;
   const cases = getRelevantMandateCases();
-  const activeCase = getActiveMandateCase();
   mandateCaseList.innerHTML = '';
 
   if (cases.length === 0) {
@@ -511,173 +444,89 @@ function renderMandateCaseModal() {
     return;
   }
 
-  if (!activeCase) return;
-  state.activeMandateCaseId = activeCase.id;
-  loadMandateParticipantCandidates(state.activeMandateCaseId).catch(() => {});
+  for (const mandate of cases) {
+    const node = listCardTemplate.content.firstElementChild.cloneNode(true);
+    const isIssuer = isMandateCaseIssuer(mandate);
+    const isTarget = isMandateCaseTarget(mandate);
 
-  const mandate = activeCase;
-  const node = listCardTemplate.content.firstElementChild.cloneNode(true);
-  const isIssuer = isMandateCaseIssuer(mandate);
-  const isTarget = isMandateCaseTarget(mandate);
+    node.querySelector('.list-title').textContent = `${mandate.id} | ${mandate.targetLabel}`;
+    node.querySelector('.status-badge').textContent = mandate.statusLabel;
+    node.querySelector('.list-meta').textContent = `Wystawil ${mandate.issuerLabel} | ${mandate.createdAtLabel}`;
+    const descriptionNode = node.querySelector('.list-description');
+    descriptionNode.textContent = mandate.reason;
 
-  node.querySelector('.list-title').textContent = `${mandate.id} | ${mandate.targetLabel}`;
-  node.querySelector('.status-badge').textContent = mandate.statusLabel;
-  node.querySelector('.list-meta').textContent = `Wystawil ${mandate.issuerLabel} | ${mandate.createdAtLabel}`;
-  const descriptionNode = node.querySelector('.list-description');
-  descriptionNode.textContent = mandate.reason;
+    const instruction = document.createElement('p');
+    instruction.className = 'list-description';
+    instruction.textContent = mandate.status === 'oczekiwanie-na-zaplate'
+      ? 'Wejdz na serwer Fordon RP i przelej kase w ekonomii do 01 | Polish Potato. Po przelewie osoba, ktora wystawila mandat, potwierdzi oplacenie.'
+      : mandate.status === 'odrzucony-oczekuje-platnosci'
+        ? 'Mandat jest odrzucony, ale nadal mozesz kliknac ZAPLAC i zmienic decyzje.'
+        : mandate.status === 'zaplacony'
+          ? 'Mandat jest juz oznaczony jako oplacony.'
+          : 'Mozesz podjac decyzje tak samo jak na Discordzie.';
+    descriptionNode.after(instruction);
 
-  const instruction = document.createElement('p');
-  instruction.className = 'list-description';
-  instruction.textContent = mandate.status === 'oczekiwanie-na-zaplate'
-    ? 'Wejdz na serwer Fordon RP i przelej kase w ekonomii do 01 | Polish Potato. Po przelewie osoba, ktora wystawila mandat, potwierdzi oplacenie.'
-    : mandate.status === 'odrzucony-oczekuje-platnosci'
-      ? 'Mandat jest odrzucony, ale nadal mozesz kliknac ZAPLAC i zmienic decyzje.'
-      : mandate.status === 'zaplacony'
-        ? 'Mandat jest juz oznaczony jako oplacony.'
-        : 'Mozesz podjac decyzje tak samo jak na Discordzie.';
-  descriptionNode.after(instruction);
+    const tags = node.querySelector('.list-tags');
+    tags.append(
+      createTag(`Kwota: ${mandate.amount} PLN`),
+      createTag(`Punkty: ${mandate.penaltyPoints ?? 'brak'}`)
+    );
+    if (mandate.description?.trim()) {
+      tags.append(createTag(`Opis: ${mandate.description.trim()}`));
+    }
 
-  const tags = node.querySelector('.list-tags');
-  tags.append(
-    createTag(`Kwota: ${mandate.amount} PLN`),
-    createTag(`Punkty: ${mandate.penaltyPoints ?? 'brak'}`)
-  );
-  if (mandate.description?.trim()) {
-    tags.append(createTag(`Opis: ${mandate.description.trim()}`));
-  }
+    const actions = node.querySelector('.card-actions');
+    actions.className = 'mandate-case-actions';
+    actions.innerHTML = '';
 
-  const actions = node.querySelector('.card-actions');
-  actions.className = 'mandate-case-actions';
-  actions.innerHTML = '';
-
-  if (isTarget) {
-    const payButton = createMandateCaseActionButton('ZAPLAC', 'primary-button', async () => {
-      try {
-        await performMandateCaseAction(mandate.id, 'zaplac');
-      } catch (error) {
-        window.alert(error.message);
-      }
-    });
-    const rejectButton = createMandateCaseActionButton('ODRZUC', 'ghost-button danger-button', async () => {
-      try {
-        await performMandateCaseAction(mandate.id, 'odrzuc');
-      } catch (error) {
-        window.alert(error.message);
-      }
-    });
-
-    payButton.disabled = mandate.status === 'oczekiwanie-na-zaplate' || mandate.status === 'zaplacony' || mandate.status === 'zamkniety';
-    rejectButton.disabled = mandate.status === 'odrzucony-oczekuje-platnosci' || mandate.status === 'oczekiwanie-na-zaplate' || mandate.status === 'zaplacony' || mandate.status === 'zamkniety';
-    actions.append(payButton, rejectButton);
-  }
-
-  if (isIssuer) {
-    const paidButton = createMandateCaseActionButton('OPLACONO', 'ghost-button', async () => {
-      try {
-        await performMandateCaseAction(mandate.id, 'oplacono');
-      } catch (error) {
-        window.alert(error.message);
-      }
-    });
-    const closeButton = createMandateCaseActionButton('ZAMKNIJ SPRAWE', 'ghost-button', async () => {
-      try {
-        await performMandateCaseAction(mandate.id, 'zamknij');
-      } catch (error) {
-        window.alert(error.message);
-      }
-    });
-
-    paidButton.disabled = mandate.status !== 'oczekiwanie-na-zaplate';
-    closeButton.disabled = mandate.status === 'zamkniety';
-    actions.append(paidButton, closeButton);
-  }
-
-  const layout = document.createElement('div');
-  layout.className = 'mandate-case-layout';
-
-  const sidebar = document.createElement('div');
-  sidebar.className = 'mandate-case-sidebar';
-  const sidebarTitle = document.createElement('p');
-  sidebarTitle.className = 'eyebrow';
-  sidebarTitle.textContent = 'Uczestnicy';
-  const participantList = document.createElement('div');
-  participantList.className = 'mandate-participants-list';
-
-  for (const participant of mandate.participants || []) {
-    const row = document.createElement('div');
-    row.className = 'mandate-participant-row';
-    const label = document.createElement('span');
-    label.textContent = participant.label;
-    row.appendChild(label);
-
-    const canRemove = participant.id !== mandate.issuerId && participant.id !== mandate.targetId;
-    if (canRemove) {
-      const removeButton = createMandateCaseActionButton('Usun osobe', 'ghost-button danger-button', async () => {
+    if (isTarget) {
+      const payButton = createMandateCaseActionButton('ZAPLAC', 'primary-button', async () => {
         try {
-          await removeMandateParticipant(mandate.id, participant.id);
+          await performMandateCaseAction(mandate.id, 'zaplac');
         } catch (error) {
           window.alert(error.message);
         }
       });
-      row.appendChild(removeButton);
+      const rejectButton = createMandateCaseActionButton('ODRZUC', 'ghost-button danger-button', async () => {
+        try {
+          await performMandateCaseAction(mandate.id, 'odrzuc');
+        } catch (error) {
+          window.alert(error.message);
+        }
+      });
+
+      payButton.disabled = mandate.status === 'oczekiwanie-na-zaplate' || mandate.status === 'zaplacony' || mandate.status === 'zamkniety';
+      rejectButton.disabled = mandate.status === 'odrzucony-oczekuje-platnosci' || mandate.status === 'oczekiwanie-na-zaplate' || mandate.status === 'zaplacony' || mandate.status === 'zamkniety';
+      actions.append(payButton, rejectButton);
     }
 
-    participantList.appendChild(row);
-  }
-  sidebar.append(sidebarTitle, participantList);
+    if (isIssuer) {
+      const paidButton = createMandateCaseActionButton('OPLACONO', 'ghost-button', async () => {
+        try {
+          await performMandateCaseAction(mandate.id, 'oplacono');
+        } catch (error) {
+          window.alert(error.message);
+        }
+      });
+      const closeButton = createMandateCaseActionButton('ZAMKNIJ SPRAWE', 'ghost-button', async () => {
+        try {
+          await performMandateCaseAction(mandate.id, 'zamknij');
+        } catch (error) {
+          window.alert(error.message);
+        }
+      });
 
-  const chat = document.createElement('div');
-  chat.className = 'mandate-case-chat';
-  const chatTitle = document.createElement('p');
-  chatTitle.className = 'eyebrow';
-  chatTitle.textContent = 'Przebieg sprawy';
-  const chatList = document.createElement('div');
-  chatList.className = 'mandate-chat-list';
-
-  for (const message of mandate.panelMessages || []) {
-    const item = document.createElement('div');
-    item.className = `mandate-chat-item${message.type === 'system' ? ' system' : ''}`;
-    const header = document.createElement('div');
-    header.className = 'mandate-chat-item-header';
-    const actor = document.createElement('strong');
-    actor.textContent = message.actorLabel || 'System';
-    const time = document.createElement('span');
-    time.textContent = message.createdAtLabel || '';
-    header.append(actor, time);
-
-    const copy = document.createElement('p');
-    copy.className = 'mandate-chat-item-copy';
-    copy.textContent = message.content;
-    item.append(header, copy);
-    chatList.appendChild(item);
-  }
-
-  const chatForm = document.createElement('form');
-  chatForm.className = 'mandate-chat-form';
-  const chatInput = document.createElement('textarea');
-  chatInput.rows = 3;
-  chatInput.placeholder = 'Napisz wiadomosc w sprawie';
-  const chatButton = document.createElement('button');
-  chatButton.type = 'submit';
-  chatButton.className = 'primary-button';
-  chatButton.textContent = 'Wyslij wiadomosc';
-  chatForm.append(chatInput, chatButton);
-  chatForm.addEventListener('submit', async event => {
-    event.preventDefault();
-    const content = chatInput.value.trim();
-    if (!content) return;
-    try {
-      await sendMandateCaseMessage(mandate.id, content);
-      chatInput.value = '';
-    } catch (error) {
-      window.alert(error.message);
+      paidButton.disabled = mandate.status !== 'oczekiwanie-na-zaplate';
+      closeButton.disabled = mandate.status === 'zamkniety';
+      actions.append(paidButton, closeButton);
     }
-  });
 
-  chat.append(chatTitle, chatList, chatForm);
-  layout.append(sidebar, chat);
-  node.append(layout);
-  mandateCaseList.appendChild(node);
+    if (!actions.children.length) {
+      actions.remove();
+    }
+
+    mandateCaseList.appendChild(node);
+  }
 }
 
 function syncMandateCaseModal() {
@@ -1568,19 +1417,6 @@ closeEditorButton.addEventListener('click', closeEditor);
 editorBackdrop.addEventListener('click', closeEditor);
 closeMandateCaseButton?.addEventListener('click', () => closeMandateCaseModal(true));
 mandateCaseBackdrop?.addEventListener('click', () => closeMandateCaseModal(true));
-addMandateParticipantButton?.addEventListener('click', async () => {
-  if (!state.activeMandateCaseId) return;
-  if (!mandateParticipantSelect.value) {
-    window.alert('Najpierw wybierz osobe do dodania.');
-    return;
-  }
-
-  try {
-    await addMandateParticipant(state.activeMandateCaseId, mandateParticipantSelect.value);
-  } catch (error) {
-    window.alert(error.message);
-  }
-});
 
 setAuthMode(state.authMode);
 setCategory(state.currentCategory);

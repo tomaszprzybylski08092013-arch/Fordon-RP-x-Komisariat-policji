@@ -101,12 +101,6 @@ function ensureGuild(guildId) {
   cfg.mandateRoleIds = Array.isArray(cfg.mandateRoleIds) ? cfg.mandateRoleIds : [];
   cfg.mandateUserIds = Array.isArray(cfg.mandateUserIds) ? cfg.mandateUserIds : [];
   cfg.mandates = Array.isArray(cfg.mandates) ? cfg.mandates : [];
-  for (const mandate of cfg.mandates) {
-    mandate.extraParticipantIds = Array.isArray(mandate.extraParticipantIds) ? mandate.extraParticipantIds : [];
-    mandate.extraParticipantLabels = mandate.extraParticipantLabels && typeof mandate.extraParticipantLabels === 'object' ? mandate.extraParticipantLabels : {};
-    mandate.panelMessages = Array.isArray(mandate.panelMessages) ? mandate.panelMessages : [];
-    mandate.messageId = mandate.messageId ?? null;
-  }
   cfg.arrestCommandChannelId = cfg.arrestCommandChannelId ?? null;
   cfg.arrestInfoChannelId = cfg.arrestInfoChannelId ?? null;
   cfg.arrestRoleIds = Array.isArray(cfg.arrestRoleIds) ? cfg.arrestRoleIds : [];
@@ -853,9 +847,6 @@ function assertMandateActionAllowed(mandate, action, actorId) {
 
 function applyMandateAction(cfg, mandate, action, actorId) {
   assertMandateActionAllowed(mandate, action, actorId);
-  const actorLabel = actorId === mandate.issuerId
-    ? (mandate.issuerDisplayName ?? mandate.issuerUsername ?? actorId)
-    : (mandate.targetDisplayName ?? mandate.targetUsername ?? actorId);
 
   if (action === 'zamknij') {
     mandate.status = 'zamkniety';
@@ -863,12 +854,6 @@ function applyMandateAction(cfg, mandate, action, actorId) {
       id: mandate.targetId,
       username: mandate.targetUsername ?? 'Nieznany',
       displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
-    });
-    appendMandatePanelMessage(mandate, {
-      type: 'system',
-      actorId,
-      actorLabel,
-      content: `${actorLabel} zamknal sprawe. Status: ${getMandateStatusLabel(mandate.status)}.`
     });
     return {
       content: getMandateInstructionContent(mandate.status, actorId),
@@ -883,12 +868,6 @@ function applyMandateAction(cfg, mandate, action, actorId) {
       username: mandate.targetUsername ?? 'Nieznany',
       displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
     });
-    appendMandatePanelMessage(mandate, {
-      type: 'system',
-      actorId,
-      actorLabel,
-      content: `${actorLabel} potwierdzil oplacenie. Status: ${getMandateStatusLabel(mandate.status)}.`
-    });
     return {
       content: getMandateInstructionContent(mandate.status)
     };
@@ -901,12 +880,6 @@ function applyMandateAction(cfg, mandate, action, actorId) {
       username: mandate.targetUsername ?? 'Nieznany',
       displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
     });
-    appendMandatePanelMessage(mandate, {
-      type: 'system',
-      actorId,
-      actorLabel,
-      content: `${actorLabel} odrzucil mandat. Status: ${getMandateStatusLabel(mandate.status)}.`
-    });
     return {
       content: getMandateInstructionContent(mandate.status)
     };
@@ -917,12 +890,6 @@ function applyMandateAction(cfg, mandate, action, actorId) {
     id: mandate.targetId,
     username: mandate.targetUsername ?? 'Nieznany',
     displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
-  });
-  appendMandatePanelMessage(mandate, {
-    type: 'system',
-    actorId,
-    actorLabel,
-    content: `${actorLabel} wybral ZAPLAC. Status: ${getMandateStatusLabel(mandate.status)}.`
   });
   return {
     content: getMandateInstructionContent(mandate.status)
@@ -940,22 +907,6 @@ async function scheduleMandateChannelDeletion(guild, mandate, reason) {
       console.error('Nie udalo sie usunac kanalu sprawy:', deleteError);
     }
   }, 5000);
-}
-
-async function addMandateChannelParticipant(guild, mandate, userId) {
-  const channel = await guild.channels.fetch(mandate.channelId).catch(() => null);
-  if (!channel || typeof channel.permissionOverwrites?.edit !== 'function') return;
-  await channel.permissionOverwrites.edit(userId, {
-    ViewChannel: true,
-    SendMessages: true,
-    ReadMessageHistory: true
-  }).catch(() => {});
-}
-
-async function removeMandateChannelParticipant(guild, mandate, userId) {
-  const channel = await guild.channels.fetch(mandate.channelId).catch(() => null);
-  if (!channel || typeof channel.permissionOverwrites?.delete !== 'function') return;
-  await channel.permissionOverwrites.delete(userId).catch(() => {});
 }
 
 function buildArrestEmbed(arrest) {
@@ -1028,19 +979,9 @@ async function createMandateCase({ guild, cfg, issuerMember, targetMember, amoun
     description: description || '',
     channelId: privateChannel.id,
     messageId: null,
-    extraParticipantIds: [],
-    extraParticipantLabels: {},
-    panelMessages: [],
     createdAt: Date.now(),
     status: 'oczekuje'
   };
-
-  appendMandatePanelMessage(mandateRecord, {
-    type: 'system',
-    actorId: issuer.id,
-    actorLabel: issuerMember.displayName ?? issuer.globalName ?? issuer.username,
-    content: `Wystawiono mandat ${mandateId} dla ${targetMember.displayName ?? target.globalName ?? target.username}. Status: ${getMandateStatusLabel('oczekuje')}.`
-  });
 
   cfg.mandates.unshift(mandateRecord);
   cfg.mandates = cfg.mandates.slice(0, 200);
@@ -1190,43 +1131,6 @@ function formatDateTime(timestamp) {
   }).format(new Date(timestamp));
 }
 
-function generateMandatePanelMessageId() {
-  return `MSG-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-}
-
-function getMandateParticipantIds(mandate) {
-  return Array.from(new Set([
-    mandate.issuerId,
-    mandate.targetId,
-    ...(Array.isArray(mandate.extraParticipantIds) ? mandate.extraParticipantIds : [])
-  ].filter(Boolean)));
-}
-
-function hasMandateCaseAccess(mandate, actorId, session = null, permissions = null) {
-  if (!mandate || !actorId) return false;
-  if (session?.role === 'owner') return true;
-  if (getMandateParticipantIds(mandate).includes(actorId)) return true;
-  if ((session?.accountType === 'policjant') && (permissions?.viewMandaty || permissions?.editMandaty || permissions?.deleteMandaty)) {
-    return true;
-  }
-  return false;
-}
-
-function appendMandatePanelMessage(mandate, { type = 'system', actorId = '', actorLabel = '', content = '' }) {
-  mandate.panelMessages = Array.isArray(mandate.panelMessages) ? mandate.panelMessages : [];
-  mandate.panelMessages.push({
-    id: generateMandatePanelMessageId(),
-    type,
-    actorId: actorId || null,
-    actorLabel: actorLabel || 'System',
-    content: String(content || '').trim(),
-    createdAt: Date.now()
-  });
-  if (mandate.panelMessages.length > 200) {
-    mandate.panelMessages = mandate.panelMessages.slice(-200);
-  }
-}
-
 function buildKartotekaEmbed(kartoteka) {
   const mandateEntries = kartoteka.entries.filter(entry => entry.type === 'mandat');
   const arrestEntries = kartoteka.entries.filter(entry => entry.type === 'arrest');
@@ -1327,18 +1231,6 @@ function serializeMandate(mandate) {
     description: mandate.description ?? '',
     status: mandate.status,
     statusLabel: getMandateStatusLabel(mandate.status),
-    participants: getMandateParticipantIds(mandate).map(id => ({
-      id,
-      label: id === mandate.issuerId
-        ? (mandate.issuerDisplayName ?? mandate.issuerUsername ?? id)
-        : id === mandate.targetId
-          ? (mandate.targetDisplayName ?? mandate.targetUsername ?? id)
-          : (mandate.extraParticipantLabels?.[id] ?? id)
-    })),
-    panelMessages: (Array.isArray(mandate.panelMessages) ? mandate.panelMessages : []).map(message => ({
-      ...message,
-      createdAtLabel: formatDateTime(message.createdAt)
-    })),
     createdAt: mandate.createdAt,
     createdAtLabel: formatDateTime(mandate.createdAt)
   };
@@ -2018,154 +1910,6 @@ function startPanelServer() {
     } catch (error) {
       res.status(error.statusCode || 400).json({ error: error.message || 'Nie udalo sie wykonac akcji.' });
     }
-  });
-
-  app.get('/api/dashboard/:guildId/mandates/:mandateId/participants/candidates', async (req, res) => {
-    const cfg = ensureGuild(req.params.guildId);
-    const mandate = cfg.mandates.find(item => item.id === req.params.mandateId);
-    const actorId = String(req.panelSession?.discordUserId || '').trim();
-
-    if (!mandate) {
-      res.status(404).json({ error: 'Nie znaleziono tego mandatu.' });
-      return;
-    }
-    if (!hasMandateCaseAccess(mandate, actorId, req.panelSession, req.panelPermissions)) {
-      res.status(403).json({ error: 'Brak dostepu do tej sprawy.' });
-      return;
-    }
-
-    const candidates = await getPunishmentCandidates(req.params.guildId);
-    const existingIds = new Set(getMandateParticipantIds(mandate));
-    res.json({
-      candidates: candidates.filter(candidate => !existingIds.has(candidate.id))
-    });
-  });
-
-  app.post('/api/dashboard/:guildId/mandates/:mandateId/messages', async (req, res) => {
-    const cfg = ensureGuild(req.params.guildId);
-    const mandate = cfg.mandates.find(item => item.id === req.params.mandateId);
-    const actorId = String(req.panelSession?.discordUserId || '').trim();
-    const content = String(req.body.content || '').trim();
-
-    if (!mandate) {
-      res.status(404).json({ error: 'Nie znaleziono tego mandatu.' });
-      return;
-    }
-    if (!hasMandateCaseAccess(mandate, actorId, req.panelSession, req.panelPermissions)) {
-      res.status(403).json({ error: 'Brak dostepu do tej sprawy.' });
-      return;
-    }
-    if (!content) {
-      res.status(400).json({ error: 'Wiadomosc nie moze byc pusta.' });
-      return;
-    }
-
-    appendMandatePanelMessage(mandate, {
-      type: 'message',
-      actorId,
-      actorLabel: createPanelActor(req.panelSession).label,
-      content
-    });
-    addPanelActivityLog(req.panelSession, 'Wiadomosc w sprawie', `Dodano wiadomosc do sprawy ${mandate.id}.`, {
-      guildId: req.params.guildId,
-      mandateId: mandate.id
-    });
-    saveConfig();
-
-    res.json({ ok: true, mandate: serializeMandate(mandate) });
-  });
-
-  app.post('/api/dashboard/:guildId/mandates/:mandateId/participants', async (req, res) => {
-    const cfg = ensureGuild(req.params.guildId);
-    const mandate = cfg.mandates.find(item => item.id === req.params.mandateId);
-    const actorId = String(req.panelSession?.discordUserId || '').trim();
-    const userId = String(req.body.userId || '').trim();
-    const guild = client.guilds.cache.get(req.params.guildId) ?? await client.guilds.fetch(req.params.guildId).catch(() => null);
-
-    if (!mandate) {
-      res.status(404).json({ error: 'Nie znaleziono tego mandatu.' });
-      return;
-    }
-    if (!hasMandateCaseAccess(mandate, actorId, req.panelSession, req.panelPermissions)) {
-      res.status(403).json({ error: 'Brak dostepu do tej sprawy.' });
-      return;
-    }
-    if (!guild || !userId) {
-      res.status(400).json({ error: 'Musisz wybrac osobe do dodania.' });
-      return;
-    }
-    if (getMandateParticipantIds(mandate).includes(userId)) {
-      res.status(400).json({ error: 'Ta osoba ma juz dostep do sprawy.' });
-      return;
-    }
-
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member || member.user?.bot) {
-      res.status(404).json({ error: 'Nie znaleziono tej osoby na serwerze.' });
-      return;
-    }
-
-    mandate.extraParticipantIds = Array.isArray(mandate.extraParticipantIds) ? mandate.extraParticipantIds : [];
-    mandate.extraParticipantLabels = mandate.extraParticipantLabels && typeof mandate.extraParticipantLabels === 'object' ? mandate.extraParticipantLabels : {};
-    mandate.extraParticipantIds.push(userId);
-    mandate.extraParticipantLabels[userId] = member.displayName ?? member.user.globalName ?? member.user.username;
-    appendMandatePanelMessage(mandate, {
-      type: 'system',
-      actorId,
-      actorLabel: createPanelActor(req.panelSession).label,
-      content: `${createPanelActor(req.panelSession).label} dodal osobe ${mandate.extraParticipantLabels[userId]} do sprawy.`
-    });
-    addPanelActivityLog(req.panelSession, 'Dodanie osoby do sprawy', `Dodano osobe do sprawy ${mandate.id}.`, {
-      guildId: req.params.guildId,
-      mandateId: mandate.id
-    });
-    saveConfig();
-    await addMandateChannelParticipant(guild, mandate, userId);
-
-    res.json({ ok: true, mandate: serializeMandate(mandate) });
-  });
-
-  app.delete('/api/dashboard/:guildId/mandates/:mandateId/participants/:userId', async (req, res) => {
-    const cfg = ensureGuild(req.params.guildId);
-    const mandate = cfg.mandates.find(item => item.id === req.params.mandateId);
-    const actorId = String(req.panelSession?.discordUserId || '').trim();
-    const userId = String(req.params.userId || '').trim();
-    const guild = client.guilds.cache.get(req.params.guildId) ?? await client.guilds.fetch(req.params.guildId).catch(() => null);
-
-    if (!mandate) {
-      res.status(404).json({ error: 'Nie znaleziono tego mandatu.' });
-      return;
-    }
-    if (!hasMandateCaseAccess(mandate, actorId, req.panelSession, req.panelPermissions)) {
-      res.status(403).json({ error: 'Brak dostepu do tej sprawy.' });
-      return;
-    }
-    if (!Array.isArray(mandate.extraParticipantIds) || !mandate.extraParticipantIds.includes(userId)) {
-      res.status(404).json({ error: 'Ta osoba nie jest dodatkowym uczestnikiem sprawy.' });
-      return;
-    }
-
-    const label = mandate.extraParticipantLabels?.[userId] ?? userId;
-    mandate.extraParticipantIds = mandate.extraParticipantIds.filter(id => id !== userId);
-    if (mandate.extraParticipantLabels) {
-      delete mandate.extraParticipantLabels[userId];
-    }
-    appendMandatePanelMessage(mandate, {
-      type: 'system',
-      actorId,
-      actorLabel: createPanelActor(req.panelSession).label,
-      content: `${createPanelActor(req.panelSession).label} usunal osobe ${label} ze sprawy.`
-    });
-    addPanelActivityLog(req.panelSession, 'Usuniecie osoby ze sprawy', `Usunieto osobe ze sprawy ${mandate.id}.`, {
-      guildId: req.params.guildId,
-      mandateId: mandate.id
-    });
-    saveConfig();
-    if (guild) {
-      await removeMandateChannelParticipant(guild, mandate, userId);
-    }
-
-    res.json({ ok: true, mandate: serializeMandate(mandate) });
   });
 
   app.patch('/api/dashboard/:guildId/mandates/:mandateId', requirePanelPermission('editMandaty'), (req, res) => {
