@@ -306,6 +306,17 @@ h2 {
   margin: -4px 0 18px;
 }
 
+.mandate-case-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.mandate-participant-buttons {
+  align-self: end;
+}
+
 .mandate-case-list {
   max-height: 62vh;
   overflow-y: auto;
@@ -321,6 +332,66 @@ h2 {
 
 .mandate-case-actions button {
   flex: 1 1 180px;
+}
+
+.mandate-case-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.mandate-case-sidebar,
+.mandate-case-chat {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px;
+}
+
+.mandate-participants-list,
+.mandate-chat-list {
+  display: grid;
+  gap: 10px;
+}
+
+.mandate-participant-row,
+.mandate-chat-item {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 12px;
+}
+
+.mandate-participant-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.mandate-chat-item.system {
+  border: 1px solid rgba(70, 216, 255, 0.16);
+}
+
+.mandate-chat-item-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.mandate-chat-item-copy {
+  margin: 0;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.mandate-chat-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .section-header {
