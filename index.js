@@ -15,24 +15,52 @@ import {
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
+import express from 'express';
+import crypto from 'crypto';
 import fs from 'fs';
+import { createServer } from 'http';
 import path from 'path';
+import { Server as SocketIOServer } from 'socket.io';
 
 const { DISCORD_TOKEN, DISCORD_APP_ID, GUILD_ID } = process.env;
+const DISCORD_CLIENT_SECRET = String(process.env.DISCORD_CLIENT_SECRET || '').trim();
 if (!DISCORD_TOKEN || !DISCORD_APP_ID || !GUILD_ID) {
   throw new Error('Brak env DISCORD_TOKEN / DISCORD_APP_ID / GUILD_ID');
 }
 
 const CONFIG_OWNER_IDS = ['1034884709479612436', '1378291577973379117'];
 const MANDATE_PAYMENT_USER_ID = '1034884709479612436';
+const EARNINGS_ROLE_ID = '1495385016656593007';
+const PANEL_PORT = Number(process.env.PORT || 3000);
+const PANEL_ADMIN_KEY = (process.env.PANEL_ADMIN_KEY || '').trim();
+const PANEL_BASE_URL = String(process.env.PANEL_BASE_URL || `http://localhost:${PANEL_PORT}`).replace(/\/$/, '');
+const DISCORD_OAUTH_REDIRECT_URI = `${PANEL_BASE_URL}/api/panel/discord/callback`;
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.cwd();
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const CONFIG_BACKUP_PATH = path.join(DATA_DIR, 'config.backup.json');
 const CONFIG_TEMP_PATH = path.join(DATA_DIR, 'config.json.tmp');
+const PANEL_DIR = path.join(process.cwd(), 'panel');
+const PANEL_PERMISSION_KEYS = [
+  'viewKartoteka',
+  'editKartoteka',
+  'viewMandaty',
+  'editMandaty',
+  'deleteMandaty',
+  'viewAreszty',
+  'editAreszty',
+  'deleteAreszty',
+  'viewZarobek'
+];
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
+
+let panelIo = null;
+let panelServer = null;
+let panelVersion = Date.now();
+const panelSessions = new Map();
+const discordOAuthStates = new Map();
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -62,6 +90,8 @@ function saveConfig() {
   fs.writeFileSync(CONFIG_TEMP_PATH, payload, 'utf8');
   fs.renameSync(CONFIG_TEMP_PATH, CONFIG_PATH);
   fs.writeFileSync(CONFIG_BACKUP_PATH, payload, 'utf8');
+  panelVersion = Date.now();
+  broadcastDashboardUpdate('config-saved');
 }
 
 function ensureGuild(guildId) {
@@ -91,6 +121,320 @@ loadConfig();
 
 function isConfigOwner(userId) {
   return CONFIG_OWNER_IDS.includes(userId);
+}
+
+function ensurePanelAuthStore() {
+  const store = guildConfig.__panelAuth || {};
+  store.users = Array.isArray(store.users) ? store.users : [];
+  store.activityLogs = Array.isArray(store.activityLogs) ? store.activityLogs : [];
+  guildConfig.__panelAuth = store;
+  return store;
+}
+
+function getDefaultPanelPermissions() {
+  return {
+    viewKartoteka: false,
+    editKartoteka: false,
+    viewMandaty: false,
+    editMandaty: false,
+    deleteMandaty: false,
+    viewAreszty: false,
+    editAreszty: false,
+    deleteAreszty: false,
+    viewZarobek: false
+  };
+}
+
+function normalizePanelPermissions(input = {}) {
+  const defaults = getDefaultPanelPermissions();
+  for (const key of PANEL_PERMISSION_KEYS) {
+    defaults[key] = Boolean(input[key]);
+  }
+  return defaults;
+}
+
+function serializePanelUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName ?? user.username,
+    accountType: user.accountType ?? 'uzytkownik',
+    discordUserId: user.discordUserId ?? null,
+    createdAt: user.createdAt,
+    permissions: normalizePanelPermissions(user.permissions),
+    canEditPermissions: (user.accountType ?? 'uzytkownik') === 'policjant'
+  };
+}
+
+function getPoliceDefaultPermissions() {
+  return {
+    viewKartoteka: true,
+    editKartoteka: true,
+    viewMandaty: true,
+    editMandaty: true,
+    deleteMandaty: false,
+    viewAreszty: true,
+    editAreszty: true,
+    deleteAreszty: false,
+    viewZarobek: true
+  };
+}
+
+function getRestrictedUserPermissions() {
+  return {
+    viewKartoteka: false,
+    editKartoteka: false,
+    viewMandaty: true,
+    editMandaty: false,
+    deleteMandaty: false,
+    viewAreszty: false,
+    editAreszty: false,
+    deleteAreszty: false,
+    viewZarobek: false
+  };
+}
+
+function ensureUniquePanelUsername(baseUsername, currentUserId = '') {
+  const normalizedBase = normalizePanelUsername(baseUsername) || `discord-${currentUserId}`;
+  const store = ensurePanelAuthStore();
+  let candidate = normalizedBase;
+  let suffix = 1;
+
+  while (store.users.some(user => user.id !== currentUserId && user.username === candidate)) {
+    suffix += 1;
+    candidate = `${normalizedBase}-${suffix}`;
+  }
+
+  return candidate;
+}
+
+function buildDiscordPanelDisplayName(member) {
+  return member.displayName ?? member.user.globalName ?? member.user.username;
+}
+
+function upsertDiscordPanelUser(member) {
+  const store = ensurePanelAuthStore();
+  const displayName = buildDiscordPanelDisplayName(member);
+  const isPolice = member.roles?.cache?.has(EARNINGS_ROLE_ID) ?? false;
+  const accountType = isPolice ? 'policjant' : 'uzytkownik';
+  const stableId = `DSP-${member.id}`;
+  let account = store.users.find(user => user.discordUserId === member.id || user.id === stableId);
+
+  if (!account) {
+    account = {
+      id: stableId,
+      discordUserId: member.id,
+      username: ensureUniquePanelUsername(displayName, stableId),
+      displayName,
+      accountType,
+      permissions: isPolice ? getPoliceDefaultPermissions() : getRestrictedUserPermissions(),
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    store.users.unshift(account);
+    return account;
+  }
+
+  account.discordUserId = member.id;
+  account.displayName = displayName;
+  account.accountType = accountType;
+  account.username = ensureUniquePanelUsername(displayName, account.id);
+  account.updatedAt = Date.now();
+
+  if (accountType === 'policjant') {
+    account.permissions = normalizePanelPermissions(
+      Object.keys(account.permissions || {}).length ? account.permissions : getPoliceDefaultPermissions()
+    );
+  } else {
+    account.permissions = getRestrictedUserPermissions();
+  }
+
+  return account;
+}
+
+function createPanelActor(session) {
+  if (session?.role === 'owner') {
+    return {
+      role: 'owner',
+      username: 'wlasciciel',
+      label: 'Wlasciciel'
+    };
+  }
+
+  const username = session?.username || 'nieznany';
+  return {
+    role: 'user',
+    username,
+    label: session?.displayName || username
+  };
+}
+
+function addPanelActivityLog(session, action, details, extra = {}) {
+  const store = ensurePanelAuthStore();
+  const actor = createPanelActor(session);
+  store.activityLogs.unshift({
+    id: `LOG-${crypto.randomBytes(4).toString('hex').toUpperCase()}`,
+    actorRole: actor.role,
+    actorUsername: actor.username,
+    actorLabel: actor.label,
+    action,
+    details,
+    createdAt: Date.now(),
+    ...extra
+  });
+  if (store.activityLogs.length > 500) {
+    store.activityLogs.length = 500;
+  }
+}
+
+function serializeActivityLog(entry) {
+  return {
+    id: entry.id,
+    actorRole: entry.actorRole,
+    actorUsername: entry.actorUsername,
+    actorLabel: entry.actorLabel,
+    action: entry.action,
+    details: entry.details,
+    createdAt: entry.createdAt,
+    createdAtLabel: formatDateTime(entry.createdAt)
+  };
+}
+
+function normalizePanelUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function hashPanelPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const normalizedPassword = String(password || '');
+  const hash = crypto.scryptSync(normalizedPassword, salt, 64).toString('hex');
+  return { salt, hash };
+}
+
+function verifyPanelPassword(password, expectedHash, salt) {
+  const candidate = crypto.scryptSync(String(password || ''), salt, 64);
+  const expected = Buffer.from(expectedHash, 'hex');
+  if (candidate.length !== expected.length) return false;
+  return crypto.timingSafeEqual(candidate, expected);
+}
+
+function generatePanelSession(role, username = '', userId = '', extra = {}) {
+  const token = crypto.randomBytes(24).toString('hex');
+  panelSessions.set(token, {
+    role,
+    username,
+    userId,
+    createdAt: Date.now(),
+    ...extra
+  });
+  return token;
+}
+
+function invalidateUserSessions(username = '', userId = '') {
+  const normalized = normalizePanelUsername(username);
+
+  for (const [token, session] of panelSessions.entries()) {
+    if (
+      session.role === 'user' &&
+      ((userId && session.userId === userId) || (normalized && normalizePanelUsername(session.username) === normalized))
+    ) {
+      panelSessions.delete(token);
+    }
+  }
+
+  if (panelIo) {
+    for (const socket of panelIo.sockets.sockets.values()) {
+      const session = socket.data?.panelSession;
+      if (
+        session?.role === 'user' &&
+        ((userId && session.userId === userId) || (normalized && normalizePanelUsername(session.username) === normalized))
+      ) {
+        socket.emit('panel:force-logout');
+        socket.disconnect(true);
+      }
+    }
+  }
+}
+
+function extractPanelToken(req) {
+  const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
+  const headerToken = typeof req.headers['x-panel-key'] === 'string' ? req.headers['x-panel-key'].trim() : '';
+  return bearer || headerToken || '';
+}
+
+function getPanelSessionFromToken(token) {
+  if (!token) return null;
+  return panelSessions.get(token) ?? null;
+}
+
+function requirePanelAuth(req, res, next) {
+  const session = getPanelSessionFromToken(extractPanelToken(req));
+  if (session) {
+    req.panelSession = session;
+    if (session.role === 'user') {
+      const store = ensurePanelAuthStore();
+      const account = store.users.find(user => user.id === session.userId || user.username === normalizePanelUsername(session.username));
+      if (!account) {
+        panelSessions.delete(extractPanelToken(req));
+        res.status(401).json({ error: 'Sesja wygasla.' });
+        return;
+      }
+      req.panelUser = account;
+      req.panelSession.displayName = account.displayName ?? account.username;
+      req.panelSession.accountType = account.accountType ?? 'uzytkownik';
+      req.panelSession.discordUserId = account.discordUserId ?? null;
+      req.panelPermissions = account.accountType === 'policjant'
+        ? normalizePanelPermissions(account.permissions)
+        : getRestrictedUserPermissions();
+    } else {
+      req.panelPermissions = null;
+    }
+    next();
+    return;
+  }
+
+  res.status(401).json({ error: 'Brak dostepu do panelu.' });
+}
+
+function requirePanelOwner(req, res, next) {
+  if (req.panelSession?.role === 'owner') {
+    next();
+    return;
+  }
+
+  res.status(403).json({ error: 'Ta sekcja jest tylko dla wlasciciela.' });
+}
+
+function requirePanelPermission(permissionKey) {
+  return (req, res, next) => {
+    if (req.panelSession?.role === 'owner') {
+      next();
+      return;
+    }
+
+    if (req.panelPermissions?.[permissionKey]) {
+      next();
+      return;
+    }
+
+    res.status(403).json({ error: 'Brak wymaganej permisji.' });
+  };
+}
+
+function broadcastDashboardUpdate(reason = 'manual', guildId = null) {
+  if (!panelIo) return;
+  const payload = {
+    reason,
+    guildId,
+    version: panelVersion,
+    updatedAt: new Date(panelVersion).toISOString()
+  };
+
+  if (guildId) {
+    panelIo.to(`guild:${guildId}`).emit('dashboard:update', payload);
+    return;
+  }
+
+  panelIo.emit('dashboard:update', payload);
 }
 
 function isSupportedTextChannel(channel) {
@@ -282,6 +626,10 @@ function buildMandateEmbed(mandate) {
     { name: 'Status', value: mandate.statusLabel, inline: true }
   );
 
+  if (mandate.description?.trim()) {
+    fields.push({ name: 'Opis', value: mandate.description.trim().slice(0, 1024), inline: false });
+  }
+
   return new EmbedBuilder()
     .setColor(Colors.Orange)
     .setTitle('Mandat')
@@ -348,6 +696,7 @@ function syncMandateToKartoteka(cfg, mandate, userData) {
   entry.amount = mandate.amount;
   entry.penaltyPoints = typeof mandate.penaltyPoints === 'number' ? mandate.penaltyPoints : null;
   entry.reason = mandate.reason;
+  entry.description = mandate.description ?? '';
   entry.status = mandate.status;
   entry.updatedAt = Date.now();
   return kartoteka;
@@ -418,8 +767,9 @@ function buildKartotekaEmbed(kartoteka) {
       return [
         `**${entry.mandateId}** | ${getMandateStatusLabel(entry.status)} | ${entry.amount} PLN${pointsText}`,
         `Powod: ${entry.reason}`,
+        entry.description?.trim() ? `Opis: ${entry.description.trim()}` : null,
         `Wystawil: <@${entry.issuerId}> | ${formatDateTime(entry.createdAt)}`
-      ].join('\n');
+      ].filter(Boolean).join('\n');
     }).join('\n\n')
     : 'Brak wpisow mandatowych.';
 
@@ -470,6 +820,664 @@ function buildKartotekaPanelEmbed() {
       'Mozesz tez edytowac opis kartoteki w osobnym okienku.'
     ].join('\n'))
     .setFooter({ text: 'Fordon RP x Komisariat Policji' });
+}
+
+function serializeMandate(mandate) {
+  return {
+    id: mandate.id,
+    issuerId: mandate.issuerId,
+    issuerLabel: mandate.issuerDisplayName ?? mandate.issuerUsername ?? mandate.issuerId,
+    targetId: mandate.targetId,
+    targetLabel: mandate.targetDisplayName ?? mandate.targetUsername ?? mandate.targetId,
+    amount: mandate.amount,
+    penaltyPoints: typeof mandate.penaltyPoints === 'number' ? mandate.penaltyPoints : null,
+    reason: mandate.reason,
+    description: mandate.description ?? '',
+    status: mandate.status,
+    statusLabel: getMandateStatusLabel(mandate.status),
+    createdAt: mandate.createdAt,
+    createdAtLabel: formatDateTime(mandate.createdAt)
+  };
+}
+
+function serializeArrest(arrest) {
+  return {
+    id: arrest.id,
+    issuerId: arrest.issuerId,
+    issuerLabel: arrest.issuerDisplayName ?? arrest.issuerUsername ?? arrest.issuerId,
+    targetId: arrest.targetId,
+    targetLabel: arrest.targetDisplayName ?? arrest.targetUsername ?? arrest.targetId,
+    reason: arrest.reason,
+    kind: arrest.kind,
+    kindLabel: getArrestTypeLabel(arrest.kind),
+    duration: arrest.duration ?? null,
+    createdAt: arrest.createdAt,
+    createdAtLabel: formatDateTime(arrest.createdAt)
+  };
+}
+
+function serializeKartoteka(kartoteka) {
+  const entries = Array.isArray(kartoteka.entries) ? kartoteka.entries : [];
+  const mandateEntries = entries.filter(entry => entry.type === 'mandat');
+  const arrestEntries = entries.filter(entry => entry.type === 'arrest');
+
+  return {
+    userId: kartoteka.userId,
+    username: kartoteka.username,
+    displayName: kartoteka.displayName,
+    note: kartoteka.note ?? '',
+    createdAt: kartoteka.createdAt,
+    createdAtLabel: formatDateTime(kartoteka.createdAt),
+    stats: {
+      mandateCount: mandateEntries.length,
+      paidMandateCount: mandateEntries.filter(entry => entry.status === 'zaplacony').length,
+      penaltyPointsTotal: mandateEntries.reduce((sum, entry) => sum + (typeof entry.penaltyPoints === 'number' ? entry.penaltyPoints : 0), 0),
+      arrestCount: arrestEntries.length
+    },
+    entries: entries.map(entry => ({
+      ...entry,
+      description: entry.description ?? '',
+      kindLabel: entry.type === 'arrest' ? getArrestTypeLabel(entry.kind) : null,
+      statusLabel: entry.type === 'mandat' ? getMandateStatusLabel(entry.status) : null,
+      createdAtLabel: entry.createdAt ? formatDateTime(entry.createdAt) : null,
+      updatedAtLabel: entry.updatedAt ? formatDateTime(entry.updatedAt) : null
+    }))
+  };
+}
+
+function serializeDashboardState(guildId, panelSession = null, panelPermissions = null) {
+  const cfg = ensureGuild(guildId);
+  const mandates = [...cfg.mandates].sort((a, b) => b.createdAt - a.createdAt);
+  const arrests = [...cfg.arrests].sort((a, b) => b.createdAt - a.createdAt);
+  const kartoteki = [...cfg.kartoteki].sort((a, b) => {
+    const aUpdated = Math.max(a.createdAt || 0, ...(a.entries || []).map(entry => entry.updatedAt || entry.createdAt || 0));
+    const bUpdated = Math.max(b.createdAt || 0, ...(b.entries || []).map(entry => entry.updatedAt || entry.createdAt || 0));
+    return bUpdated - aUpdated;
+  });
+
+  const canSeeEverything = !panelSession || panelSession.role === 'owner';
+  const isRestrictedUser = panelSession?.role === 'user' && panelSession.accountType === 'uzytkownik' && panelSession.discordUserId;
+  const canSeeMandates = canSeeEverything || panelPermissions?.viewMandaty || panelPermissions?.editMandaty || panelPermissions?.deleteMandaty;
+  const canSeeArrests = canSeeEverything || panelPermissions?.viewAreszty || panelPermissions?.editAreszty || panelPermissions?.deleteAreszty;
+  const canSeeKartoteki = canSeeEverything || panelPermissions?.viewKartoteka || panelPermissions?.editKartoteka;
+  const mandateBase = isRestrictedUser ? mandates.filter(mandate => mandate.targetId === panelSession.discordUserId) : mandates;
+  const visibleMandates = canSeeMandates ? mandateBase : [];
+  const visibleArrests = isRestrictedUser ? [] : (canSeeArrests ? arrests : []);
+  const visibleKartoteki = isRestrictedUser ? [] : (canSeeKartoteki ? kartoteki : []);
+
+  return {
+    guildId,
+    version: panelVersion,
+    updatedAt: new Date(panelVersion).toISOString(),
+    authRequired: Boolean(PANEL_ADMIN_KEY),
+    stats: {
+      mandateCount: visibleMandates.length,
+      paidMandateCount: visibleMandates.filter(mandate => mandate.status === 'zaplacony').length,
+      pendingMandateCount: visibleMandates.filter(mandate => mandate.status !== 'zaplacony' && mandate.status !== 'zamkniety').length,
+      mandateRevenue: visibleMandates
+        .filter(mandate => mandate.status === 'zaplacony')
+        .reduce((sum, mandate) => sum + (Number(mandate.amount) || 0), 0),
+      arrestCount: visibleArrests.length,
+      kartotekaCount: visibleKartoteki.length
+    },
+    mandates: visibleMandates.map(serializeMandate),
+    arrests: visibleArrests.map(serializeArrest),
+    kartoteki: visibleKartoteki.map(serializeKartoteka)
+  };
+}
+
+function isSamePolishDate(timestamp, dateString) {
+  if (!dateString) return true;
+  const [year, month, day] = String(dateString).split('-').map(Number);
+  if (!year || !month || !day) return false;
+  const date = new Date(timestamp);
+  return date.getFullYear() === year && date.getMonth() + 1 === month && date.getDate() === day;
+}
+
+function computeEarningsStats(cfg, userId, dateString = '') {
+  const mandateMatches = cfg.mandates.filter(mandate => mandate.issuerId === userId && isSamePolishDate(mandate.createdAt, dateString));
+  const arrestMatches = cfg.arrests.filter(arrest => arrest.issuerId === userId && isSamePolishDate(arrest.createdAt, dateString));
+
+  return {
+    mandateCount: mandateMatches.length,
+    paidMandateCount: mandateMatches.filter(mandate => mandate.status === 'zaplacony').length,
+    pendingMandateCount: mandateMatches.filter(mandate => mandate.status !== 'zaplacony' && mandate.status !== 'zamkniety').length,
+    mandateRevenue: mandateMatches
+      .filter(mandate => mandate.status === 'zaplacony')
+      .reduce((sum, mandate) => sum + (Number(mandate.amount) || 0), 0),
+    arrestCount: arrestMatches.length
+  };
+}
+
+async function fetchGuildMemberForPanel(discordUserId) {
+  const guild = client.guilds.cache.get(GUILD_ID) ?? await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (!guild) return null;
+  return guild.members.fetch(discordUserId).catch(() => null);
+}
+
+function getDiscordAuthUrl() {
+  const state = crypto.randomBytes(16).toString('hex');
+  discordOAuthStates.set(state, Date.now());
+
+  for (const [key, timestamp] of discordOAuthStates.entries()) {
+    if (Date.now() - timestamp > 10 * 60 * 1000) {
+      discordOAuthStates.delete(key);
+    }
+  }
+
+  const params = new URLSearchParams({
+    client_id: DISCORD_APP_ID,
+    response_type: 'code',
+    redirect_uri: DISCORD_OAUTH_REDIRECT_URI,
+    scope: 'identify',
+    state,
+    prompt: 'none'
+  });
+
+  return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+async function getEarningsCandidates(guildId) {
+  const guild = client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) return [];
+
+  try {
+    await guild.members.fetch();
+  } catch {}
+
+  const role = guild.roles.cache.get(EARNINGS_ROLE_ID) ?? await guild.roles.fetch(EARNINGS_ROLE_ID).catch(() => null);
+  const directMembers = role
+    ? [...role.members.values()].map(member => ({
+        id: member.id,
+        label: member.displayName ?? member.user.globalName ?? member.user.username
+      }))
+    : guild.members.cache
+        .filter(member => member.roles?.cache?.has(EARNINGS_ROLE_ID))
+        .map(member => ({
+          id: member.id,
+          label: member.displayName ?? member.user.globalName ?? member.user.username
+        }));
+
+  if (directMembers.length > 0) {
+    return directMembers.sort((a, b) => a.label.localeCompare(b.label, 'pl'));
+  }
+
+  const cfg = ensureGuild(guildId);
+  const fallbackIds = new Set([
+    ...cfg.mandates.map(item => item.issuerId),
+    ...cfg.arrests.map(item => item.issuerId)
+  ]);
+
+  const fallbacks = [...fallbackIds].map(id => {
+    const mandate = cfg.mandates.find(item => item.issuerId === id);
+    const arrest = cfg.arrests.find(item => item.issuerId === id);
+    return {
+      id,
+      label: mandate?.issuerDisplayName ?? arrest?.issuerDisplayName ?? mandate?.issuerUsername ?? arrest?.issuerUsername ?? id
+    };
+  });
+
+  return fallbacks.sort((a, b) => a.label.localeCompare(b.label, 'pl'));
+}
+
+function startPanelServer() {
+  const app = express();
+  panelServer = createServer(app);
+  panelIo = new SocketIOServer(panelServer, {
+    cors: {
+      origin: true,
+      credentials: true
+    }
+  });
+
+  panelIo.use((socket, next) => {
+    const authToken = typeof socket.handshake.auth?.token === 'string' ? socket.handshake.auth.token.trim() : '';
+    const session = getPanelSessionFromToken(authToken);
+    if (session) {
+      socket.data.panelSession = session;
+      next();
+      return;
+    }
+    next(new Error('Brak dostepu do panelu.'));
+  });
+
+  panelIo.on('connection', socket => {
+    socket.on('dashboard:watch', guildId => {
+      if (typeof guildId === 'string' && guildId.trim()) {
+        socket.join(`guild:${guildId.trim()}`);
+      }
+    });
+  });
+
+  app.use(express.json({ limit: '1mb' }));
+
+  app.get('/api/panel/meta', (req, res) => {
+    res.json({
+      guildId: GUILD_ID,
+      authRequired: true,
+      version: panelVersion,
+      discordLoginEnabled: Boolean(DISCORD_CLIENT_SECRET)
+    });
+  });
+
+  app.get('/api/panel/discord/start', (req, res) => {
+    if (!DISCORD_CLIENT_SECRET) {
+      res.status(500).send('Brak DISCORD_CLIENT_SECRET w .env.');
+      return;
+    }
+
+    res.redirect(getDiscordAuthUrl());
+  });
+
+  app.get('/api/panel/discord/callback', async (req, res) => {
+    if (!DISCORD_CLIENT_SECRET) {
+      res.status(500).send('Brak DISCORD_CLIENT_SECRET w .env.');
+      return;
+    }
+
+    const code = String(req.query.code || '').trim();
+    const state = String(req.query.state || '').trim();
+    const storedState = discordOAuthStates.get(state);
+    discordOAuthStates.delete(state);
+
+    if (!code || !state || !storedState) {
+      res.status(400).send('Niepoprawne logowanie przez Discord.');
+      return;
+    }
+
+    try {
+      const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: DISCORD_APP_ID,
+          client_secret: DISCORD_CLIENT_SECRET,
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: DISCORD_OAUTH_REDIRECT_URI
+        })
+      });
+
+      const tokenData = await tokenResponse.json();
+      if (!tokenResponse.ok || !tokenData.access_token) {
+        res.status(401).send('Nie udalo sie zalogowac przez Discord.');
+        return;
+      }
+
+      const userResponse = await fetch('https://discord.com/api/users/@me', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` }
+      });
+      const discordUser = await userResponse.json();
+      if (!userResponse.ok || !discordUser.id) {
+        res.status(401).send('Nie udalo sie pobrac danych uzytkownika Discord.');
+        return;
+      }
+
+      const member = await fetchGuildMemberForPanel(discordUser.id);
+      if (!member) {
+        res.status(403).send('Musisz byc na serwerze Discord, aby wejsc do panelu.');
+        return;
+      }
+
+      const account = upsertDiscordPanelUser(member);
+      const token = generatePanelSession('user', account.username, account.id, {
+        displayName: account.displayName,
+        accountType: account.accountType,
+        discordUserId: account.discordUserId
+      });
+
+      addPanelActivityLog(
+        { role: 'user', username: account.username, displayName: account.displayName },
+        'Logowanie',
+        `${account.displayName} zalogowal sie do panelu przez Discord.`
+      );
+      saveConfig();
+
+      const permissions = account.accountType === 'policjant'
+        ? normalizePanelPermissions(account.permissions)
+        : getRestrictedUserPermissions();
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(`<!doctype html>
+<html lang="pl">
+  <body style="background:#08101d;color:#eff4ff;font-family:sans-serif;display:grid;place-items:center;min-height:100vh;">
+    <script>
+      localStorage.setItem('panelSessionToken', ${JSON.stringify(token)});
+      localStorage.setItem('panelSessionRole', 'user');
+      localStorage.setItem('panelSessionUsername', ${JSON.stringify(account.username)});
+      localStorage.setItem('panelSessionDisplayName', ${JSON.stringify(account.displayName)});
+      localStorage.setItem('panelSessionAccountType', ${JSON.stringify(account.accountType)});
+      localStorage.setItem('panelSessionPermissions', ${JSON.stringify(JSON.stringify(permissions))});
+      window.location.replace('/');
+    </script>
+    Trwa logowanie...
+  </body>
+</html>`);
+    } catch {
+      res.status(500).send('Wystapil blad podczas logowania przez Discord.');
+    }
+  });
+
+  app.post('/api/panel/login', (req, res) => {
+    const mode = String(req.body.mode || '').trim().toLowerCase();
+
+    if (mode === 'owner') {
+      const adminKey = String(req.body.adminKey || '').trim();
+      if (!PANEL_ADMIN_KEY || adminKey !== PANEL_ADMIN_KEY) {
+        res.status(401).json({ error: 'Niepoprawny admin key.' });
+        return;
+      }
+
+      const token = generatePanelSession('owner', 'Wlasciciel');
+      addPanelActivityLog({ role: 'owner', username: 'Wlasciciel' }, 'Logowanie', 'Wlasciciel zalogowal sie do panelu.');
+      saveConfig();
+      res.json({
+        ok: true,
+        token,
+        role: 'owner',
+        username: 'Wlasciciel',
+        permissions: null
+      });
+      return;
+    }
+
+    res.status(400).json({ error: 'Niepoprawny tryb logowania.' });
+  });
+
+  app.use('/api', requirePanelAuth);
+
+  app.get('/api/panel/session', (req, res) => {
+    res.json({
+      role: req.panelSession.role,
+      username: req.panelSession.username || '',
+      displayName: req.panelSession.displayName || req.panelUser?.displayName || req.panelSession.username || '',
+      accountType: req.panelSession.accountType || req.panelUser?.accountType || null,
+      permissions: req.panelPermissions ? normalizePanelPermissions(req.panelPermissions) : null
+    });
+  });
+
+  app.post('/api/panel/logout', (req, res) => {
+    const token = extractPanelToken(req);
+    if (token) panelSessions.delete(token);
+    addPanelActivityLog(req.panelSession, 'Wylogowanie', `${createPanelActor(req.panelSession).label} wylogowal sie z panelu.`);
+    saveConfig();
+    res.json({ ok: true });
+  });
+
+  app.get('/api/panel/users', requirePanelOwner, (req, res) => {
+    const store = ensurePanelAuthStore();
+    res.json({
+      users: store.users.map(serializePanelUser)
+    });
+  });
+
+  app.get('/api/panel/activity-logs', requirePanelOwner, (req, res) => {
+    const store = ensurePanelAuthStore();
+    const actor = String(req.query.actor || 'all').trim().toLowerCase();
+    const logs = store.activityLogs
+      .filter(entry => actor === 'all' || String(entry.actorUsername || '').trim().toLowerCase() === actor)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(serializeActivityLog);
+
+    res.json({
+      logs,
+      users: [
+        { value: 'all', label: 'Wszyscy' },
+        { value: 'Wlasciciel'.toLowerCase(), label: 'Wlasciciel' },
+        ...store.users.map(user => ({ value: user.username, label: user.displayName ?? user.username }))
+      ]
+    });
+  });
+
+  app.post('/api/panel/users', requirePanelOwner, (req, res) => {
+    res.status(400).json({ error: 'Konta uzytkownikow tworza sie teraz automatycznie po logowaniu przez Discord.' });
+  });
+
+  app.patch('/api/panel/users/:userId/permissions', requirePanelOwner, (req, res) => {
+    const store = ensurePanelAuthStore();
+    const account = store.users.find(user => user.id === req.params.userId);
+    if (!account) {
+      res.status(404).json({ error: 'Nie znaleziono takiego uzytkownika.' });
+      return;
+    }
+    if ((account.accountType ?? 'uzytkownik') !== 'policjant') {
+      res.status(400).json({ error: 'Permisje mozna edytowac tylko dla policjantow.' });
+      return;
+    }
+
+    account.permissions = normalizePanelPermissions(req.body.permissions || {});
+    account.updatedAt = Date.now();
+    invalidateUserSessions(account.username, account.id);
+    addPanelActivityLog(req.panelSession, 'Zmiana permisji', `Zmieniono permisje konta ${account.username}.`, {
+      targetUsername: account.username
+    });
+    saveConfig();
+
+    res.json({
+      ok: true,
+      users: store.users.map(serializePanelUser)
+    });
+  });
+
+  app.patch('/api/panel/users/:userId/password', requirePanelOwner, (req, res) => {
+    res.status(400).json({ error: 'Hasla sa wylaczone. Uzytkownicy loguja sie teraz tylko przez Discord.' });
+  });
+
+  app.delete('/api/panel/users/:userId', requirePanelOwner, (req, res) => {
+    const store = ensurePanelAuthStore();
+    const account = store.users.find(user => user.id === req.params.userId);
+    const before = store.users.length;
+    store.users = store.users.filter(user => user.id !== req.params.userId);
+    guildConfig.__panelAuth = store;
+
+    if (store.users.length === before) {
+      res.status(404).json({ error: 'Nie znaleziono takiego uzytkownika.' });
+      return;
+    }
+
+    if (account) invalidateUserSessions(account.username, account.id);
+    if (account) {
+      addPanelActivityLog(req.panelSession, 'Usuniecie konta', `Usunieto konto panelu ${account.username}.`, {
+        targetUsername: account.username
+      });
+    }
+    saveConfig();
+    res.json({
+      ok: true,
+      users: store.users.map(serializePanelUser)
+    });
+  });
+
+  app.get('/api/dashboard/:guildId', (req, res) => {
+    res.json(serializeDashboardState(req.params.guildId, req.panelSession, req.panelPermissions));
+  });
+
+  app.get('/api/dashboard/:guildId/earnings/candidates', requirePanelPermission('viewZarobek'), async (req, res) => {
+    const candidates = await getEarningsCandidates(req.params.guildId);
+    res.json({ candidates, roleId: EARNINGS_ROLE_ID });
+  });
+
+  app.get('/api/dashboard/:guildId/earnings/summary', requirePanelPermission('viewZarobek'), (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const userId = String(req.query.userId || '').trim();
+    const scope = String(req.query.scope || 'all').trim().toLowerCase();
+    const date = String(req.query.date || '').trim();
+
+    if (!userId) {
+      res.status(400).json({ error: 'Musisz wybrac osobe.' });
+      return;
+    }
+    if (scope === 'date' && !date) {
+      res.status(400).json({ error: 'Dla statystyk z danego dnia podaj date.' });
+      return;
+    }
+
+    const stats = computeEarningsStats(cfg, userId, scope === 'date' ? date : '');
+    res.json({
+      userId,
+      scope,
+      date: scope === 'date' ? date : '',
+      stats
+    });
+  });
+
+  app.patch('/api/dashboard/:guildId/mandates/:mandateId', requirePanelPermission('editMandaty'), (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const mandate = cfg.mandates.find(item => item.id === req.params.mandateId);
+    if (!mandate) {
+      res.status(404).json({ error: 'Nie znaleziono mandatu.' });
+      return;
+    }
+
+    const reason = String(req.body.reason ?? '').trim();
+    const description = String(req.body.description ?? '').trim();
+    const rawStatus = String(req.body.status ?? mandate.status).trim().toLowerCase();
+    const penaltyPointsRaw = req.body.penaltyPoints;
+
+    if (!reason) {
+      res.status(400).json({ error: 'Powod mandatu nie moze byc pusty.' });
+      return;
+    }
+
+    let penaltyPoints = null;
+    if (penaltyPointsRaw !== null && penaltyPointsRaw !== undefined && String(penaltyPointsRaw).trim() !== '') {
+      penaltyPoints = Number(penaltyPointsRaw);
+      if (!Number.isInteger(penaltyPoints) || penaltyPoints < 0) {
+        res.status(400).json({ error: 'Punkty karne musza byc liczba calkowita wieksza lub rowna 0.' });
+        return;
+      }
+    }
+
+    mandate.reason = reason;
+    mandate.description = description;
+    mandate.penaltyPoints = penaltyPoints;
+    mandate.status = normalizeEditableMandateStatus(rawStatus, mandate.status);
+    addPanelActivityLog(req.panelSession, 'Edycja mandatu', `Edytowano mandat ${mandate.id} wystawiony dla ${mandate.targetDisplayName ?? mandate.targetUsername ?? mandate.targetId}.`, {
+      guildId: req.params.guildId,
+      mandateId: mandate.id
+    });
+
+    syncMandateToKartoteka(cfg, mandate, {
+      id: mandate.targetId,
+      username: mandate.targetUsername ?? 'Nieznany',
+      displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
+    });
+    saveConfig();
+
+    res.json({ ok: true, mandate: serializeMandate(mandate) });
+  });
+
+  app.delete('/api/dashboard/:guildId/mandates/:mandateId', requirePanelPermission('deleteMandaty'), async (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const mandateIndex = cfg.mandates.findIndex(item => item.id === req.params.mandateId);
+    if (mandateIndex === -1) {
+      res.status(404).json({ error: 'Nie znaleziono mandatu.' });
+      return;
+    }
+
+    const [removedMandate] = cfg.mandates.splice(mandateIndex, 1);
+    addPanelActivityLog(req.panelSession, 'Usuniecie mandatu', `Usunieto mandat ${removedMandate.id} wystawiony dla ${removedMandate.targetDisplayName ?? removedMandate.targetUsername ?? removedMandate.targetId}.`, {
+      guildId: req.params.guildId,
+      mandateId: removedMandate.id
+    });
+    for (const kartoteka of cfg.kartoteki) {
+      kartoteka.entries = (kartoteka.entries || []).filter(entry => !(entry.type === 'mandat' && entry.mandateId === removedMandate.id));
+    }
+    saveConfig();
+
+    const guild = client.guilds.cache.get(req.params.guildId);
+    const channel = guild ? await guild.channels.fetch(removedMandate.channelId).catch(() => null) : null;
+    if (channel && typeof channel.delete === 'function') {
+      await channel.delete('Usunieto mandat z aplikacji').catch(() => {});
+    }
+
+    res.json({ ok: true });
+  });
+
+  app.patch('/api/dashboard/:guildId/arrests/:arrestId', requirePanelPermission('editAreszty'), (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const arrest = cfg.arrests.find(item => item.id === req.params.arrestId);
+    if (!arrest) {
+      res.status(404).json({ error: 'Nie znaleziono aresztu.' });
+      return;
+    }
+
+    const reason = String(req.body.reason ?? '').trim();
+    const kindInput = String(req.body.kind ?? arrest.kind).trim().toLowerCase();
+    const duration = String(req.body.duration ?? '').trim();
+    const normalizedKind = ['wiezienie', 'pojscie-do-wiezienia', 'pojscie do wiezienia'].includes(kindInput) ? 'wiezienie' : 'areszt';
+
+    if (!reason) {
+      res.status(400).json({ error: 'Powod aresztu nie moze byc pusty.' });
+      return;
+    }
+    if (normalizedKind === 'wiezienie' && !duration) {
+      res.status(400).json({ error: 'Dla pojscia do wiezienia podaj czas.' });
+      return;
+    }
+
+    arrest.reason = reason;
+    arrest.kind = normalizedKind;
+    arrest.duration = normalizedKind === 'wiezienie' ? duration : null;
+    addPanelActivityLog(req.panelSession, 'Edycja aresztu', `Edytowano areszt ${arrest.id} dla ${arrest.targetDisplayName ?? arrest.targetUsername ?? arrest.targetId}.`, {
+      guildId: req.params.guildId,
+      arrestId: arrest.id
+    });
+
+    syncArrestToKartoteka(cfg, arrest, {
+      id: arrest.targetId,
+      username: arrest.targetUsername ?? 'Nieznany',
+      displayName: arrest.targetDisplayName ?? arrest.targetUsername ?? 'Nieznany'
+    });
+    saveConfig();
+
+    res.json({ ok: true, arrest: serializeArrest(arrest) });
+  });
+
+  app.delete('/api/dashboard/:guildId/arrests/:arrestId', requirePanelPermission('deleteAreszty'), (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const arrestIndex = cfg.arrests.findIndex(item => item.id === req.params.arrestId);
+    if (arrestIndex === -1) {
+      res.status(404).json({ error: 'Nie znaleziono aresztu.' });
+      return;
+    }
+
+    const [removedArrest] = cfg.arrests.splice(arrestIndex, 1);
+    addPanelActivityLog(req.panelSession, 'Usuniecie aresztu', `Usunieto areszt ${removedArrest.id} dla ${removedArrest.targetDisplayName ?? removedArrest.targetUsername ?? removedArrest.targetId}.`, {
+      guildId: req.params.guildId,
+      arrestId: removedArrest.id
+    });
+    for (const kartoteka of cfg.kartoteki) {
+      kartoteka.entries = (kartoteka.entries || []).filter(entry => !(entry.type === 'arrest' && entry.arrestId === removedArrest.id));
+    }
+    saveConfig();
+
+    res.json({ ok: true });
+  });
+
+  app.patch('/api/dashboard/:guildId/kartoteki/:userId', requirePanelPermission('editKartoteka'), (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const kartoteka = cfg.kartoteki.find(item => item.userId === req.params.userId);
+    if (!kartoteka) {
+      res.status(404).json({ error: 'Nie znaleziono kartoteki.' });
+      return;
+    }
+
+    kartoteka.note = String(req.body.note ?? '').trim();
+    addPanelActivityLog(req.panelSession, 'Edycja kartoteki', `Zmieniono opis kartoteki ${kartoteka.displayName || kartoteka.username}.`, {
+      guildId: req.params.guildId,
+      targetUsername: kartoteka.username
+    });
+    saveConfig();
+
+    res.json({ ok: true, kartoteka: serializeKartoteka(kartoteka) });
+  });
+
+  app.use('/', express.static(PANEL_DIR));
+
+  panelServer.listen(PANEL_PORT, () => {
+    console.log(`Panel aplikacji dziala na porcie ${PANEL_PORT}`);
+  });
 }
 
 async function findMemberByDiscordNick(guild, query) {
@@ -1170,6 +2178,7 @@ client.on('interactionCreate', async interaction => {
           targetDisplayName: interaction.guild.members.cache.get(target.id)?.displayName ?? target.globalName ?? target.username,
           targetUsername: target.username,
           reason,
+          description: '',
           kind,
           duration: kind === 'wiezienie' ? duration : null,
           createdAt: Date.now()
@@ -1279,6 +2288,7 @@ client.on('interactionCreate', async interaction => {
           amount,
           penaltyPoints: penaltyPoints ?? null,
           reason,
+          description: '',
           channelId: privateChannel.id,
           createdAt: Date.now(),
           status: 'oczekuje'
@@ -1784,6 +2794,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 (async () => {
+  startPanelServer();
   await registerCommands();
   await client.login(DISCORD_TOKEN);
 })();

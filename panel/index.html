@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fordon RP x Komisariat Policji</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="background-glow background-glow-left"></div>
+    <div class="background-glow background-glow-right"></div>
+
+    <div class="auth-overlay hidden" id="authOverlay">
+      <form class="auth-card" id="authForm">
+        <p class="eyebrow">Panel zabezpieczony</p>
+        <h1>Wybierz sposob logowania</h1>
+        <div class="auth-mode-row">
+          <button class="category-chip active" id="ownerModeButton" type="button">Wlasciciel</button>
+          <button class="category-chip" id="userModeButton" type="button">Uzytkownik</button>
+        </div>
+
+        <div id="ownerAuthFields">
+          <p class="muted">Wpisz admin key wlasciciela.</p>
+          <input id="authKeyInput" class="text-input" type="password" placeholder="Admin key" autocomplete="off" />
+        </div>
+
+        <div class="hidden" id="userAuthFields">
+          <p class="muted">Zaloguj sie przez Discord. Konto utworzy sie automatycznie po wejsciu, jesli jestes na serwerze.</p>
+          <button class="primary-button" id="discordLoginButton" type="button">Zaloguj przez Discord</button>
+        </div>
+
+        <button class="primary-button" id="ownerLoginButton" type="submit">Zaloguj</button>
+        <p class="form-error" id="authError"></p>
+      </form>
+    </div>
+
+    <main class="app-shell">
+      <section class="hero-panel">
+        <div class="hero-copy-wrap">
+          <p class="eyebrow">Fordon RP x Komisariat Policji</p>
+          <h1>Centrum kartoteki i spraw policyjnych</h1>
+        </div>
+
+        <div class="hero-actions">
+          <button class="primary-button" id="refreshButton">Odswiez</button>
+          <button class="ghost-button" id="logoutButton" type="button">Wyloguj</button>
+          <div class="status-pill">
+            <span class="status-dot" id="liveDot"></span>
+            <span id="liveStatusLabel">Laczenie...</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="category-bar" id="categoryBar">
+        <button class="category-chip active" type="button" data-category="kartoteki">Kartoteka</button>
+        <button class="category-chip" type="button" data-category="mandaty">Mandaty</button>
+        <button class="category-chip" type="button" data-category="areszty">Areszty i wiezienia</button>
+        <button class="category-chip" type="button" data-category="zarobek">Zobacz zarobek</button>
+        <button class="category-chip owner-only hidden" type="button" data-category="dziennik-zdarzen">Dziennik zdarzen</button>
+        <button class="category-chip owner-only hidden" type="button" data-category="uzytkownicy">Uzytkownicy</button>
+      </section>
+
+      <section class="layout-grid category-section hidden" data-section="mandaty">
+        <div class="panel-card">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Mandaty</p>
+              <h2>Aktywnosc mandatow</h2>
+            </div>
+            <span class="section-count" id="mandatesCount">0</span>
+          </div>
+          <div class="card-list" id="mandatesList"></div>
+        </div>
+      </section>
+
+      <section class="layout-grid category-section hidden" data-section="areszty">
+        <div class="panel-card">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Areszty</p>
+              <h2>Historia zatrzyman</h2>
+            </div>
+            <span class="section-count" id="arrestsCount">0</span>
+          </div>
+          <div class="card-list" id="arrestsList"></div>
+        </div>
+      </section>
+
+      <section class="panel-card kartoteka-panel category-section" data-section="kartoteki">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Kartoteki</p>
+            <h2>Kartoteki policyjne</h2>
+          </div>
+          <span class="section-count" id="kartotekiCount">0</span>
+        </div>
+        <div class="kartoteki-grid" id="kartotekiGrid"></div>
+      </section>
+
+      <section class="panel-card category-section hidden" data-section="zarobek">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Zobacz zarobek</p>
+            <h2>Statystyki policjanta</h2>
+          </div>
+        </div>
+
+        <div class="earnings-controls">
+          <div class="form-group">
+            <label for="earningsOfficerSelect">Osoba</label>
+            <select id="earningsOfficerSelect"></select>
+          </div>
+
+          <div class="form-group">
+            <label for="earningsScopeSelect">Zakres</label>
+            <select id="earningsScopeSelect">
+              <option value="all">Ogolne statystyki</option>
+              <option value="date">Tylko z danego dnia</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="earningsDateInput">Data</label>
+            <input id="earningsDateInput" type="date" />
+          </div>
+
+          <div class="form-group earnings-action-group">
+            <label>&nbsp;</label>
+            <div class="earnings-button-row">
+              <button class="primary-button" id="earningsLoadButton" type="button">Pokaz</button>
+              <button class="ghost-button" id="earningsShowMandatesButton" type="button">Zobacz mandaty</button>
+            </div>
+          </div>
+        </div>
+
+        <section class="stats-grid" id="earningsStatsGrid"></section>
+        <section class="panel-card earnings-mandates-panel hidden" id="earningsMandatesPanel">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Mandaty tej osoby</p>
+              <h2>Wystawione mandaty</h2>
+            </div>
+            <span class="section-count" id="earningsMandatesCount">0</span>
+          </div>
+          <div class="card-list" id="earningsMandatesList"></div>
+        </section>
+      </section>
+
+      <section class="panel-card category-section hidden owner-only" data-section="dziennik-zdarzen">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Dziennik zdarzen</p>
+            <h2>Historia akcji uzytkownikow panelu</h2>
+          </div>
+          <span class="section-count" id="activityLogsCount">0</span>
+        </div>
+
+        <div class="earnings-controls">
+          <div class="form-group">
+            <label for="activityActorSelect">Kto</label>
+            <select id="activityActorSelect">
+              <option value="all">Wszyscy</option>
+            </select>
+          </div>
+
+          <div class="form-group earnings-action-group">
+            <label>&nbsp;</label>
+            <div class="earnings-button-row">
+              <button class="primary-button" id="activityLogsLoadButton" type="button">Pokaz zdarzenia</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-list" id="activityLogsList"></div>
+      </section>
+
+      <section class="panel-card category-section hidden owner-only" data-section="generowanie-loginow">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Generowanie loginow</p>
+            <h2>Tworzenie kont panelu</h2>
+          </div>
+        </div>
+
+        <form class="editor-form" id="createUserForm">
+          <div class="form-group">
+            <label for="createUserUsername">Nick</label>
+            <input id="createUserUsername" name="username" type="text" placeholder="Nowy uzytkownik" />
+          </div>
+          <div class="form-group">
+            <label for="createUserPassword">Haslo</label>
+            <input id="createUserPassword" name="password" type="password" placeholder="Haslo konta" />
+          </div>
+          <div class="form-actions">
+            <button class="primary-button" type="submit">Generuj</button>
+          </div>
+          <p class="form-error" id="createUserError"></p>
+        </form>
+      </section>
+
+      <section class="panel-card category-section hidden owner-only" data-section="uzytkownicy">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Uzytkownicy</p>
+            <h2>Stworzone konta panelu</h2>
+          </div>
+          <span class="section-count" id="usersCount">0</span>
+        </div>
+        <div class="card-list" id="usersList"></div>
+      </section>
+
+    </main>
+
+    <div class="editor-modal hidden" id="editorModal">
+      <div class="editor-backdrop" id="editorBackdrop"></div>
+      <div class="editor-card">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow" id="editorEyebrow">Edycja</p>
+            <h2 id="editorTitle">Edytuj wpis</h2>
+          </div>
+          <button class="icon-button" id="closeEditorButton" type="button">×</button>
+        </div>
+
+        <form id="editorForm" class="editor-form"></form>
+        <p class="form-error" id="editorError"></p>
+      </div>
+    </div>
+
+    <template id="statCardTemplate">
+      <article class="stat-card">
+        <p class="stat-label"></p>
+        <h3 class="stat-value"></h3>
+      </article>
+    </template>
+
+    <template id="listCardTemplate">
+      <article class="list-card reveal-card">
+        <div class="list-card-topline">
+          <strong class="list-title"></strong>
+          <span class="status-badge"></span>
+        </div>
+        <p class="list-meta"></p>
+        <p class="list-description"></p>
+        <div class="list-tags"></div>
+        <div class="card-actions">
+          <button class="ghost-button action-edit" type="button">Edytuj</button>
+          <button class="ghost-button action-delete danger-button" type="button">Usun</button>
+        </div>
+      </article>
+    </template>
+
+    <template id="kartotekaTemplate">
+      <article class="kartoteka-card reveal-card">
+        <div class="list-card-topline">
+          <strong class="list-title"></strong>
+          <span class="status-badge status-badge-soft"></span>
+        </div>
+        <p class="list-meta"></p>
+        <p class="kartoteka-note"></p>
+        <div class="kartoteka-stats"></div>
+        <div class="kartoteka-history"></div>
+        <button class="ghost-button action-note-edit" type="button">Edytuj opis</button>
+      </article>
+    </template>
+
+    <template id="userCardTemplate">
+      <article class="list-card reveal-card">
+        <div class="list-card-topline">
+          <strong class="list-title"></strong>
+          <span class="status-badge user-type-badge">Uzytkownik</span>
+        </div>
+        <p class="list-meta"></p>
+        <div class="list-tags"></div>
+        <div class="card-actions">
+          <button class="ghost-button action-user-permissions" type="button">Ustaw permisje</button>
+          <button class="ghost-button action-user-delete danger-button" type="button">Usun konto</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

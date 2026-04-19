@@ -1,0 +1,169 @@
+{
+  "1488872289536577538": {
+    "mandateCommandChannelId": "1493986175348904007",
+    "mandateInfoChannelId": "1493986175348904007",
+    "mandateRoleIds": [
+      "1489238570043441192"
+    ],
+    "mandateUserIds": [
+      "1378291577973379117"
+    ],
+    "mandates": [],
+    "kartotekaChannelId": "1494304184902619177",
+    "kartotekaPanelMessageId": "1494310719431377078",
+    "kartotekaRoleIds": [],
+    "kartotekaUserIds": [],
+    "kartoteki": [
+      {
+        "userId": "1257649648865116241",
+        "username": "fabsigmaboy",
+        "displayName": "Fabiann1552",
+        "createdAt": 1776599272010,
+        "note": "",
+        "entries": []
+      },
+      {
+        "userId": "1432316541847867454",
+        "username": "tymix_212",
+        "displayName": "05 | Tymonix2121",
+        "createdAt": 1776597181730,
+        "note": "",
+        "entries": []
+      },
+      {
+        "userId": "1489280876650041366",
+        "username": "crunchips047",
+        "displayName": "02 | PanSpodBagna",
+        "createdAt": 1776342437710,
+        "note": "",
+        "entries": []
+      },
+      {
+        "userId": "1034884709479612436",
+        "username": "polish_potato3215",
+        "displayName": "01 | Polish Potato",
+        "createdAt": 1776342151711,
+        "note": "Jest idiota",
+        "entries": []
+      },
+      {
+        "userId": "1085946513093566567",
+        "username": "noobek_123.",
+        "displayName": "03 | popkot_yt",
+        "createdAt": 1776341873528,
+        "note": "",
+        "entries": []
+      }
+    ],
+    "arrestCommandChannelId": null,
+    "arrestInfoChannelId": null,
+    "arrestRoleIds": [],
+    "arrestUserIds": [],
+    "arrests": [],
+    "robloxNickChannelId": null,
+    "robloxNickVerifiedRoleId": null
+  },
+  "__panelAuth": {
+    "users": [],
+    "activityLogs": [
+      {
+        "id": "LOG-946A5A01",
+        "actorRole": "owner",
+        "actorUsername": "wlasciciel",
+        "actorLabel": "Wlasciciel",
+        "action": "Usuniecie konta",
+        "details": "Usunieto konto panelu fabiann1552.",
+        "createdAt": 1776602927854,
+        "targetUsername": "fabiann1552"
+      },
+      {
+        "id": "LOG-7FF4A5B6",
+        "actorRole": "owner",
+        "actorUsername": "wlasciciel",
+        "actorLabel": "Wlasciciel",
+        "action": "Usuniecie mandatu",
+        "details": "Usunieto mandat MANDAT-VRQWZ9 wystawiony dla Fabiann1552.",
+        "createdAt": 1776602902419,
+        "guildId": "1488872289536577538",
+        "mandateId": "MANDAT-VRQWZ9"
+      },
+      {
+        "id": "LOG-29AE1FA3",
+        "actorRole": "owner",
+        "actorUsername": "wlasciciel",
+        "actorLabel": "Wlasciciel",
+        "action": "Edycja mandatu",
+        "details": "Edytowano mandat MANDAT-VRQWZ9 wystawiony dla Fabiann1552.",
+        "createdAt": 1776602888722,
+        "guildId": "1488872289536577538",
+        "mandateId": "MANDAT-VRQWZ9"
+      },
+      {
+        "id": "LOG-8ED3E007",
+        "actorRole": "owner",
+        "actorUsername": "wlasciciel",
+        "actorLabel": "Wlasciciel",
+        "action": "Usuniecie mandatu",
+        "details": "Usunieto mandat MANDAT-LEH2O0 wystawiony dla Fabiann1552.",
+        "createdAt": 1776602865176,
+        "guildId": "1488872289536577538",
+        "mandateId": "MANDAT-LEH2O0"
+      },
+      {
+        "id": "LOG-1A4FE0B3",
+        "actorRole": "owner",
+        "actorUsername": "wlasciciel",
+        "actorLabel": "Wlasciciel",
+        "action": "Usuniecie konta",
+        "details": "Usunieto konto panelu tomala6.",
+        "createdAt": 1776602790081,
+        "targetUsername": "tomala6"
+      },
+      {
+        "id": "LOG-558CBC16",
+        "actorRole": "owner",
+        "actorUsername": "wlasciciel",
+        "actorLabel": "Wlasciciel",
+        "action": "Logowanie",
+        "details": "Wlasciciel zalogowal sie do panelu.",
+        "createdAt": 1776602783479
+      },
+      {
+        "id": "LOG-22A9DED4",
+        "actorRole": "user",
+        "actorUsername": "fabiann1552",
+        "actorLabel": "Fabiann1552",
+        "action": "Logowanie",
+        "details": "Fabiann1552 zalogowal sie do panelu przez Discord.",
+        "createdAt": 1776602763106
+      },
+      {
+        "id": "LOG-E7256710",
+        "actorRole": "user",
+        "actorUsername": "fabiann1552",
+        "actorLabel": "Fabiann1552",
+        "action": "Wylogowanie",
+        "details": "Fabiann1552 wylogowal sie z panelu.",
+        "createdAt": 1776602758580
+      },
+      {
+        "id": "LOG-842501AD",
+        "actorRole": "user",
+        "actorUsername": "fabiann1552",
+        "actorLabel": "Fabiann1552",
+        "action": "Logowanie",
+        "details": "Fabiann1552 zalogowal sie do panelu przez Discord.",
+        "createdAt": 1776602746182
+      },
+      {
+        "id": "LOG-8C74B611",
+        "actorRole": "user",
+        "actorUsername": "fabiann1552",
+        "actorLabel": "Fabiann1552",
+        "action": "Logowanie",
+        "details": "Fabiann1552 zalogowal sie do panelu przez Discord.",
+        "createdAt": 1776602676427
+      }
+    ]
+  }
+}
