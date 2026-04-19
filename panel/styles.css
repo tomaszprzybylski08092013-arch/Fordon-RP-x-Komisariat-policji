@@ -298,6 +298,31 @@ h2 {
   border-radius: var(--radius-xl);
 }
 
+.mandate-case-card {
+  width: min(920px, calc(100vw - 32px));
+}
+
+.mandate-case-copy {
+  margin: -4px 0 18px;
+}
+
+.mandate-case-list {
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.mandate-case-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.mandate-case-actions button {
+  flex: 1 1 180px;
+}
+
 .section-header {
   display: flex;
   justify-content: space-between;

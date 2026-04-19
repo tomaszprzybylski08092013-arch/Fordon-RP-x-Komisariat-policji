@@ -584,6 +584,98 @@ function getMandateComponents(
   return [decisionRow, paidRow, closeRow];
 }
 
+function getMandateComponentState(status) {
+  if (status === 'zamkniety') {
+    return {
+      payDisabled: true,
+      rejectDisabled: true,
+      paidDisabled: true,
+      closeDisabled: true
+    };
+  }
+
+  if (status === 'zaplacony') {
+    return {
+      payDisabled: true,
+      rejectDisabled: true,
+      paidDisabled: true,
+      closeDisabled: false
+    };
+  }
+
+  if (status === 'oczekiwanie-na-zaplate') {
+    return {
+      payDisabled: true,
+      rejectDisabled: true,
+      paidDisabled: false,
+      closeDisabled: false
+    };
+  }
+
+  if (status === 'odrzucony-oczekuje-platnosci') {
+    return {
+      payDisabled: false,
+      rejectDisabled: true,
+      paidDisabled: true,
+      closeDisabled: false
+    };
+  }
+
+  return {
+    payDisabled: false,
+    rejectDisabled: false,
+    paidDisabled: true,
+    closeDisabled: false
+  };
+}
+
+function getMandateStatusColor(status) {
+  if (status === 'zamkniety') return Colors.DarkGrey;
+  if (status === 'zaplacony') return Colors.Green;
+  if (status === 'oczekiwanie-na-zaplate') return Colors.Green;
+  if (status === 'odrzucony-oczekuje-platnosci') return Colors.Red;
+  return Colors.Orange;
+}
+
+function getMandateInstructionContent(status, actorId = '') {
+  if (status === 'zamkniety') {
+    return actorId
+      ? `Sprawa zostala zamknieta przez <@${actorId}>. Kanal zostanie usuniety za chwile.`
+      : 'Sprawa zostala zamknieta. Kanal zostanie usuniety za chwile.';
+  }
+
+  if (status === 'zaplacony') {
+    return 'Mandat oplacony.';
+  }
+
+  if (status === 'oczekiwanie-na-zaplate') {
+    return `Wejdz na serwer Fordon RP i przelej kase w ekonomii do <@${MANDATE_PAYMENT_USER_ID}>. Po przelewie osoba, ktora wystawila mandat, potwierdzi oplacenie.`;
+  }
+
+  if (status === 'odrzucony-oczekuje-platnosci') {
+    return 'Mandat zostal odrzucony. Jesli zmienisz zdanie, nadal mozesz kliknac ZAPLAC i wtedy bot wysle instrukcje platnosci.';
+  }
+
+  return [
+    'Otrzymales mandat.',
+    'Mozesz zaakceptowac mandat i zaplacic go na serwerze albo go odrzucic.',
+    'Po kliknieciu ZAPLAC bot napisze, co masz zrobic dalej.'
+  ].join('\n');
+}
+
+function buildMandateCasePayload(mandate, contentOverride = null) {
+  const embed = buildMandateEmbed({
+    ...mandate,
+    statusLabel: getMandateStatusLabel(mandate.status)
+  }).setColor(getMandateStatusColor(mandate.status));
+
+  return {
+    content: contentOverride ?? getMandateInstructionContent(mandate.status),
+    embeds: [embed],
+    components: getMandateComponents(mandate.id, getMandateComponentState(mandate.status))
+  };
+}
+
 function getKartotekaPanelComponents() {
   return [
     new ActionRowBuilder().addComponents(
@@ -649,6 +741,172 @@ function buildMandateEmbed(mandate) {
     .setTitle('Mandat')
     .addFields(fields)
     .setTimestamp(new Date(mandate.createdAt));
+}
+
+async function findMandateCaseMessage(guild, mandate) {
+  const channel = await guild.channels.fetch(mandate.channelId).catch(() => null);
+  if (!isSupportedTextChannel(channel) || !channel.messages) {
+    return { channel: null, message: null };
+  }
+
+  if (mandate.messageId) {
+    const storedMessage = await channel.messages.fetch(mandate.messageId).catch(() => null);
+    if (storedMessage) {
+      return { channel, message: storedMessage };
+    }
+  }
+
+  const recentMessages = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+  const message = recentMessages?.find(entry => {
+    if (entry.author?.id !== client.user?.id) return false;
+    return entry.embeds.some(embed =>
+      embed.fields?.some(field => field.name === 'ID mandatu' && field.value === mandate.id)
+    );
+  }) ?? null;
+
+  if (message) {
+    mandate.messageId = message.id;
+  }
+
+  return { channel, message };
+}
+
+async function syncMandateCaseMessage(guild, cfg, mandate, contentOverride = null) {
+  const { message } = await findMandateCaseMessage(guild, mandate);
+  if (!message) return;
+
+  await message.edit(buildMandateCasePayload(mandate, contentOverride)).catch(() => {});
+}
+
+function assertMandateActionAllowed(mandate, action, actorId) {
+  if (!mandate) {
+    const error = new Error('Nie znaleziono tego mandatu.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (action === 'zamknij') {
+    if (actorId !== mandate.issuerId) {
+      const error = new Error('Tylko osoba, ktora wystawila mandat, moze zamknac sprawe.');
+      error.statusCode = 403;
+      throw error;
+    }
+    if (mandate.status === 'zamkniety') {
+      const error = new Error('Ta sprawa jest juz zamknieta.');
+      error.statusCode = 400;
+      throw error;
+    }
+    return;
+  }
+
+  if (action === 'oplacono') {
+    if (actorId !== mandate.issuerId) {
+      const error = new Error('Tylko osoba, ktora wystawila mandat, moze potwierdzic oplacenie.');
+      error.statusCode = 403;
+      throw error;
+    }
+    if (mandate.status === 'zaplacony') {
+      const error = new Error('Ten mandat jest juz oznaczony jako oplacony.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (mandate.status !== 'oczekiwanie-na-zaplate') {
+      const error = new Error('Najpierw osoba z mandatem musi kliknac ZAPLAC.');
+      error.statusCode = 400;
+      throw error;
+    }
+    return;
+  }
+
+  if (actorId !== mandate.targetId) {
+    const error = new Error('Tylko osoba, ktora dostala mandat, moze uzyc tego przycisku.');
+    error.statusCode = 403;
+    throw error;
+  }
+  if (mandate.status === 'zaplacony') {
+    const error = new Error('Ten mandat jest juz oznaczony jako oplacony.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (mandate.status === 'zamkniety') {
+    const error = new Error('Ta sprawa jest juz zamknieta.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (mandate.status === 'oczekiwanie-na-zaplate') {
+    const error = new Error('Ten mandat oczekuje juz na potwierdzenie platnosci przez osobe, ktora go wystawila.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (action === 'odrzuc' && (mandate.status === 'odrzucony-oczekuje-platnosci' || mandate.status === 'odrzucony')) {
+    const error = new Error('Ten mandat jest juz odrzucony. Nadal mozesz kliknac ZAPLAC, jesli zmienisz zdanie.');
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function applyMandateAction(cfg, mandate, action, actorId) {
+  assertMandateActionAllowed(mandate, action, actorId);
+
+  if (action === 'zamknij') {
+    mandate.status = 'zamkniety';
+    syncMandateToKartoteka(cfg, mandate, {
+      id: mandate.targetId,
+      username: mandate.targetUsername ?? 'Nieznany',
+      displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
+    });
+    return {
+      content: getMandateInstructionContent(mandate.status, actorId),
+      closeChannelAfterMs: 5000
+    };
+  }
+
+  if (action === 'oplacono') {
+    mandate.status = 'zaplacony';
+    syncMandateToKartoteka(cfg, mandate, {
+      id: mandate.targetId,
+      username: mandate.targetUsername ?? 'Nieznany',
+      displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
+    });
+    return {
+      content: getMandateInstructionContent(mandate.status)
+    };
+  }
+
+  if (action === 'odrzuc') {
+    mandate.status = 'odrzucony-oczekuje-platnosci';
+    syncMandateToKartoteka(cfg, mandate, {
+      id: mandate.targetId,
+      username: mandate.targetUsername ?? 'Nieznany',
+      displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
+    });
+    return {
+      content: getMandateInstructionContent(mandate.status)
+    };
+  }
+
+  mandate.status = 'oczekiwanie-na-zaplate';
+  syncMandateToKartoteka(cfg, mandate, {
+    id: mandate.targetId,
+    username: mandate.targetUsername ?? 'Nieznany',
+    displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
+  });
+  return {
+    content: getMandateInstructionContent(mandate.status)
+  };
+}
+
+async function scheduleMandateChannelDeletion(guild, mandate, reason) {
+  setTimeout(async () => {
+    try {
+      const channel = await guild.channels.fetch(mandate.channelId).catch(() => null);
+      if (channel && typeof channel.delete === 'function') {
+        await channel.delete(reason);
+      }
+    } catch (deleteError) {
+      console.error('Nie udalo sie usunac kanalu sprawy:', deleteError);
+    }
+  }, 5000);
 }
 
 function buildArrestEmbed(arrest) {
@@ -720,6 +978,7 @@ async function createMandateCase({ guild, cfg, issuerMember, targetMember, amoun
     reason,
     description: description || '',
     channelId: privateChannel.id,
+    messageId: null,
     createdAt: Date.now(),
     status: 'oczekuje'
   };
@@ -734,7 +993,7 @@ async function createMandateCase({ guild, cfg, issuerMember, targetMember, amoun
   saveConfig();
 
   const mandateEmbed = buildMandateEmbed({ ...mandateRecord, statusLabel: 'Oczekuje na decyzje' });
-  await privateChannel.send({
+  const caseMessage = await privateChannel.send({
     content: [
       `<@${target.id}> otrzymal mandat od <@${issuer.id}>.`,
       'Mozesz zaakceptowac mandat i zaplacic go na serwerze albo go odrzucic.',
@@ -743,6 +1002,8 @@ async function createMandateCase({ guild, cfg, issuerMember, targetMember, amoun
     embeds: [mandateEmbed],
     components: getMandateComponents(mandateId)
   });
+  mandateRecord.messageId = caseMessage.id;
+  saveConfig();
 
   const infoChannel = await guild.channels.fetch(cfg.mandateInfoChannelId).catch(() => null);
   if (isSupportedTextChannel(infoChannel) && typeof infoChannel.send === 'function') {
@@ -1301,6 +1562,7 @@ function startPanelServer() {
       localStorage.setItem('panelSessionUsername', ${JSON.stringify(account.username)});
       localStorage.setItem('panelSessionDisplayName', ${JSON.stringify(account.displayName)});
       localStorage.setItem('panelSessionAccountType', ${JSON.stringify(account.accountType)});
+      localStorage.setItem('panelSessionDiscordUserId', ${JSON.stringify(account.discordUserId)});
       localStorage.setItem('panelSessionPermissions', ${JSON.stringify(JSON.stringify(permissions))});
       window.location.replace('/');
     </script>
@@ -1346,6 +1608,7 @@ function startPanelServer() {
       username: req.panelSession.username || '',
       displayName: req.panelSession.displayName || req.panelUser?.displayName || req.panelSession.username || '',
       accountType: req.panelSession.accountType || req.panelUser?.accountType || null,
+      discordUserId: req.panelSession.discordUserId || req.panelUser?.discordUserId || null,
       permissions: req.panelPermissions ? normalizePanelPermissions(req.panelPermissions) : null
     });
   });
@@ -1495,6 +1758,7 @@ function startPanelServer() {
     const targetId = String(req.body.targetId || '').trim();
     const type = String(req.body.type || '').trim().toLowerCase();
     const reason = String(req.body.reason || '').trim();
+    const description = String(req.body.description || '').trim();
     const amountRaw = req.body.amount;
     const penaltyPointsRaw = req.body.penaltyPoints;
     const duration = String(req.body.duration || '').trim();
@@ -1547,7 +1811,8 @@ function startPanelServer() {
         targetMember,
         amount,
         penaltyPoints,
-        reason
+        reason,
+        description
       });
 
       addPanelActivityLog(req.panelSession, 'Nadanie kary', `Nadano mandat ${mandateRecord.id} dla ${mandateRecord.targetDisplayName}.`, {
@@ -1597,6 +1862,54 @@ function startPanelServer() {
       type: normalizedType,
       id: arrestRecord.id
     });
+  });
+
+  app.post('/api/dashboard/:guildId/mandates/:mandateId/action', async (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const mandate = cfg.mandates.find(item => item.id === req.params.mandateId);
+    const action = String(req.body.action || '').trim().toLowerCase();
+    const actorId = String(req.panelSession?.discordUserId || '').trim();
+    const guild = client.guilds.cache.get(req.params.guildId) ?? await client.guilds.fetch(req.params.guildId).catch(() => null);
+
+    if (!['zaplac', 'odrzuc', 'oplacono', 'zamknij'].includes(action)) {
+      res.status(400).json({ error: 'Niepoprawna akcja mandatu.' });
+      return;
+    }
+    if (!mandate) {
+      res.status(404).json({ error: 'Nie znaleziono tego mandatu.' });
+      return;
+    }
+    if (!actorId) {
+      res.status(403).json({ error: 'Ta akcja wymaga logowania kontem Discord.' });
+      return;
+    }
+
+    try {
+      const result = applyMandateAction(cfg, mandate, action, actorId);
+      addPanelActivityLog(
+        req.panelSession,
+        `Akcja mandatu: ${action}`,
+        `${createPanelActor(req.panelSession).label} wykonal akcje ${action} dla mandatu ${mandate.id}.`,
+        { guildId: req.params.guildId, mandateId: mandate.id }
+      );
+      saveConfig();
+
+      if (guild) {
+        await syncMandateCaseMessage(guild, cfg, mandate, result.content);
+        if (result.closeChannelAfterMs) {
+          await scheduleMandateChannelDeletion(guild, mandate, 'Zamknieta sprawa mandatu');
+        }
+      }
+
+      res.json({
+        ok: true,
+        action,
+        message: result.content,
+        mandate: serializeMandate(mandate)
+      });
+    } catch (error) {
+      res.status(error.statusCode || 400).json({ error: error.message || 'Nie udalo sie wykonac akcji.' });
+    }
   });
 
   app.patch('/api/dashboard/:guildId/mandates/:mandateId', requirePanelPermission('editMandaty'), (req, res) => {
@@ -2908,158 +3221,25 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ content: 'Nie znalazlem tego mandatu.', flags: 64 });
         return;
       }
-      if (action === 'mandat_zamknij') {
-        if (interaction.user.id !== mandate.issuerId) {
-          await interaction.reply({ content: 'Tylko osoba, ktora wystawila mandat, moze zamknac sprawe.', flags: 64 });
-          return;
-        }
-        if (mandate.status === 'zamkniety') {
-          await interaction.reply({ content: 'Ta sprawa jest juz zamknieta.', flags: 64 });
-          return;
-        }
+      const actionMap = {
+        mandat_zaplac: 'zaplac',
+        mandat_odrzuc: 'odrzuc',
+        mandat_oplacono: 'oplacono',
+        mandat_zamknij: 'zamknij'
+      };
 
-        mandate.status = 'zamkniety';
-        syncMandateToKartoteka(cfg, mandate, {
-          id: mandate.targetId,
-          username: mandate.targetUsername ?? 'Nieznany',
-          displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
-        });
+      try {
+        const result = applyMandateAction(cfg, mandate, actionMap[action], interaction.user.id);
         saveConfig();
 
-        const closedEmbed = buildMandateEmbed({
-          ...mandate,
-          statusLabel: getMandateStatusLabel(mandate.status)
-        }).setColor(Colors.DarkGrey);
+        await interaction.update(buildMandateCasePayload(mandate, result.content));
 
-        await interaction.update({
-          content: `Sprawa zostala zamknieta przez <@${interaction.user.id}>. Kanal zostanie usuniety za chwile.`,
-          embeds: [closedEmbed],
-          components: getMandateComponents(mandate.id, { payDisabled: true, rejectDisabled: true, closeDisabled: true })
-        });
-
-        setTimeout(async () => {
-          try {
-            const channel = await interaction.guild.channels.fetch(mandate.channelId).catch(() => null);
-            if (channel && typeof channel.delete === 'function') {
-              await channel.delete('Zamknieta sprawa mandatu');
-            }
-          } catch (deleteError) {
-            console.error('Nie udalo sie usunac kanalu sprawy:', deleteError);
-          }
-        }, 5000);
-        return;
-      }
-      if (action === 'mandat_oplacono') {
-        if (interaction.user.id !== mandate.issuerId) {
-          await interaction.reply({ content: 'Tylko osoba, ktora wystawila mandat, moze potwierdzic oplacenie.', flags: 64 });
-          return;
+        if (result.closeChannelAfterMs) {
+          await scheduleMandateChannelDeletion(interaction.guild, mandate, 'Zamknieta sprawa mandatu');
         }
-        if (mandate.status === 'zaplacony') {
-          await interaction.reply({ content: 'Ten mandat jest juz oznaczony jako oplacony.', flags: 64 });
-          return;
-        }
-        if (mandate.status !== 'oczekiwanie-na-zaplate') {
-          await interaction.reply({ content: 'Najpierw osoba z mandatem musi kliknac ZAPLAC.', flags: 64 });
-          return;
-        }
-
-        mandate.status = 'zaplacony';
-        syncMandateToKartoteka(cfg, mandate, {
-          id: mandate.targetId,
-          username: mandate.targetUsername ?? 'Nieznany',
-          displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
-        });
-        saveConfig();
-
-        const paidEmbed = buildMandateEmbed({
-          ...mandate,
-          statusLabel: getMandateStatusLabel(mandate.status)
-        }).setColor(Colors.Green);
-
-        await interaction.update({
-          content: 'Mandat oplacony.',
-          embeds: [paidEmbed],
-          components: getMandateComponents(mandate.id, {
-            payDisabled: true,
-            rejectDisabled: true,
-            paidDisabled: true,
-            closeDisabled: false
-          })
-        });
-        return;
+      } catch (actionError) {
+        await interaction.reply({ content: actionError.message || 'Nie udalo sie wykonac akcji.', flags: 64 });
       }
-      if (interaction.user.id !== mandate.targetId) {
-        await interaction.reply({ content: 'Tylko osoba, ktora dostala mandat, moze uzyc tego przycisku.', flags: 64 });
-        return;
-      }
-      if (mandate.status === 'zaplacony') {
-        await interaction.reply({ content: 'Ten mandat jest juz oznaczony jako oplacony.', flags: 64 });
-        return;
-      }
-      if (mandate.status === 'zamkniety') {
-        await interaction.reply({ content: 'Ta sprawa jest juz zamknieta.', flags: 64 });
-        return;
-      }
-      if (mandate.status === 'oczekiwanie-na-zaplate') {
-        await interaction.reply({ content: 'Ten mandat oczekuje juz na potwierdzenie platnosci przez osobe, ktora go wystawila.', flags: 64 });
-        return;
-      }
-
-      if (action === 'mandat_odrzuc') {
-        if (mandate.status === 'odrzucony-oczekuje-platnosci' || mandate.status === 'odrzucony') {
-          await interaction.reply({ content: 'Ten mandat jest juz odrzucony. Nadal mozesz kliknac ZAPLAC, jesli zmienisz zdanie.', flags: 64 });
-          return;
-        }
-
-        mandate.status = 'odrzucony-oczekuje-platnosci';
-        syncMandateToKartoteka(cfg, mandate, {
-          id: mandate.targetId,
-          username: mandate.targetUsername ?? 'Nieznany',
-          displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
-        });
-        saveConfig();
-
-        const updatedEmbed = buildMandateEmbed({
-          ...mandate,
-          statusLabel: getMandateStatusLabel(mandate.status)
-        }).setColor(Colors.Red);
-
-        await interaction.update({
-          content: `Mandat zostal odrzucony. Jesli zmienisz zdanie, nadal mozesz kliknac ZAPLAC i wtedy bot wysle instrukcje platnosci.`,
-          embeds: [updatedEmbed],
-          components: getMandateComponents(mandate.id, {
-            payDisabled: false,
-            rejectDisabled: true,
-            paidDisabled: true,
-            closeDisabled: false
-          })
-        });
-        return;
-      }
-
-      mandate.status = 'oczekiwanie-na-zaplate';
-      syncMandateToKartoteka(cfg, mandate, {
-        id: mandate.targetId,
-        username: mandate.targetUsername ?? 'Nieznany',
-        displayName: mandate.targetDisplayName ?? mandate.targetUsername ?? 'Nieznany'
-      });
-      saveConfig();
-
-      const updatedEmbed = buildMandateEmbed({
-        ...mandate,
-        statusLabel: getMandateStatusLabel(mandate.status)
-      }).setColor(Colors.Green);
-
-      await interaction.update({
-        content: `Wejdz na serwer Fordon RP i przelej kase w ekonomii do <@${MANDATE_PAYMENT_USER_ID}>. Po przelewie osoba, ktora wystawila mandat, potwierdzi oplacenie.`,
-        embeds: [updatedEmbed],
-        components: getMandateComponents(mandate.id, {
-          payDisabled: true,
-          rejectDisabled: true,
-          paidDisabled: false,
-          closeDisabled: false
-        })
-      });
     }
   } catch (err) {
     console.error('Blad interakcji:', err);

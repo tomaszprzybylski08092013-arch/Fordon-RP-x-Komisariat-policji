@@ -191,6 +191,11 @@
               <input id="punishmentDurationInput" name="duration" type="text" placeholder="Np. 30 minut albo 2 dni" />
             </div>
 
+            <div class="form-group hidden" id="punishmentDescriptionGroup">
+              <label for="punishmentDescriptionInput">Opis mandatu</label>
+              <textarea id="punishmentDescriptionInput" name="description" rows="4" placeholder="Dodatkowy opis mandatu"></textarea>
+            </div>
+
             <div class="form-group punishment-reason-group">
               <label for="punishmentReasonInput">Za co</label>
               <textarea id="punishmentReasonInput" name="reason" rows="4" placeholder="Wpisz powod kary"></textarea>
@@ -258,6 +263,22 @@
 
         <form id="editorForm" class="editor-form"></form>
         <p class="form-error" id="editorError"></p>
+      </div>
+    </div>
+
+    <div class="editor-modal hidden" id="mandateCaseModal">
+      <div class="editor-backdrop" id="mandateCaseBackdrop"></div>
+      <div class="editor-card mandate-case-card">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Prywatna sprawa</p>
+            <h2>Twoje aktywne mandaty</h2>
+          </div>
+          <button class="icon-button" id="closeMandateCaseButton" type="button">Ã—</button>
+        </div>
+
+        <p class="muted mandate-case-copy">Tutaj masz te same decyzje co na Discordzie. Zmiana na stronie od razu aktualizuje sprawe bota.</p>
+        <div class="card-list mandate-case-list" id="mandateCaseList"></div>
       </div>
     </div>
 
