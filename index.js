@@ -187,7 +187,7 @@ function getRestrictedUserPermissions() {
     viewMandaty: true,
     editMandaty: false,
     deleteMandaty: false,
-    viewAreszty: false,
+    viewAreszty: true,
     editAreszty: false,
     deleteAreszty: false,
     viewZarobek: false
@@ -402,6 +402,20 @@ function requirePanelOwner(req, res, next) {
   }
 
   res.status(403).json({ error: 'Ta sekcja jest tylko dla wlasciciela.' });
+}
+
+function requirePanelOfficer(req, res, next) {
+  if (req.panelSession?.role === 'owner') {
+    next();
+    return;
+  }
+
+  if (req.panelUser?.accountType === 'policjant') {
+    next();
+    return;
+  }
+
+  res.status(403).json({ error: 'Ta sekcja jest tylko dla policjantow.' });
 }
 
 function requirePanelPermission(permissionKey) {
@@ -657,6 +671,127 @@ function buildArrestEmbed(arrest) {
     .setTimestamp(new Date(arrest.createdAt));
 }
 
+async function createMandateCase({ guild, cfg, issuerMember, targetMember, amount, penaltyPoints = null, reason, description = '' }) {
+  const issuer = issuerMember.user;
+  const target = targetMember.user;
+  const mandateId = generateMandateId();
+  const everyoneRole = guild.roles.everyone;
+  const channelName = sanitizeChannelName(`mandat-${target.username}-${mandateId.toLowerCase()}`);
+  const permissionOverwrites = [
+    { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: target.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+    { id: issuer.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+    {
+      id: guild.members.me.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels]
+    }
+  ];
+
+  for (const roleId of cfg.mandateRoleIds) {
+    permissionOverwrites.push({
+      id: roleId,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    });
+  }
+
+  for (const userId of cfg.mandateUserIds) {
+    permissionOverwrites.push({
+      id: userId,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    });
+  }
+
+  const privateChannel = await guild.channels.create({
+    name: channelName,
+    type: ChannelType.GuildText,
+    permissionOverwrites
+  });
+
+  const mandateRecord = {
+    id: mandateId,
+    issuerId: issuer.id,
+    issuerDisplayName: issuerMember.displayName ?? issuer.globalName ?? issuer.username,
+    issuerUsername: issuer.username,
+    targetId: target.id,
+    targetDisplayName: targetMember.displayName ?? target.globalName ?? target.username,
+    targetUsername: target.username,
+    amount,
+    penaltyPoints: penaltyPoints ?? null,
+    reason,
+    description: description || '',
+    channelId: privateChannel.id,
+    createdAt: Date.now(),
+    status: 'oczekuje'
+  };
+
+  cfg.mandates.unshift(mandateRecord);
+  cfg.mandates = cfg.mandates.slice(0, 200);
+  syncMandateToKartoteka(cfg, mandateRecord, {
+    id: target.id,
+    username: target.username,
+    displayName: targetMember.displayName ?? target.globalName ?? target.username
+  });
+  saveConfig();
+
+  const mandateEmbed = buildMandateEmbed({ ...mandateRecord, statusLabel: 'Oczekuje na decyzje' });
+  await privateChannel.send({
+    content: [
+      `<@${target.id}> otrzymal mandat od <@${issuer.id}>.`,
+      'Mozesz zaakceptowac mandat i zaplacic go na serwerze albo go odrzucic.',
+      'Po kliknieciu ZAPLAC bot napisze, co masz zrobic dalej.'
+    ].join('\n'),
+    embeds: [mandateEmbed],
+    components: getMandateComponents(mandateId)
+  });
+
+  const infoChannel = await guild.channels.fetch(cfg.mandateInfoChannelId).catch(() => null);
+  if (isSupportedTextChannel(infoChannel) && typeof infoChannel.send === 'function') {
+    await infoChannel.send({
+      embeds: [buildMandateEmbed({ ...mandateRecord, statusLabel: 'Wystawiony' }).setColor(Colors.Blue)]
+    }).catch(() => {});
+  }
+
+  return { mandateRecord, privateChannel };
+}
+
+async function createArrestCase({ guild, cfg, issuerMember, targetMember, reason, kind, duration = '' }) {
+  const issuer = issuerMember.user;
+  const target = targetMember.user;
+  const arrestId = generateArrestId();
+  const arrestRecord = {
+    id: arrestId,
+    issuerId: issuer.id,
+    issuerDisplayName: issuerMember.displayName ?? issuer.globalName ?? issuer.username,
+    issuerUsername: issuer.username,
+    targetId: target.id,
+    targetDisplayName: targetMember.displayName ?? target.globalName ?? target.username,
+    targetUsername: target.username,
+    reason,
+    description: '',
+    kind,
+    duration: kind === 'wiezienie' ? duration : null,
+    createdAt: Date.now()
+  };
+
+  cfg.arrests.unshift(arrestRecord);
+  cfg.arrests = cfg.arrests.slice(0, 200);
+  syncArrestToKartoteka(cfg, arrestRecord, {
+    id: target.id,
+    username: target.username,
+    displayName: targetMember.displayName ?? target.globalName ?? target.username
+  });
+  saveConfig();
+
+  const infoChannel = await guild.channels.fetch(cfg.arrestInfoChannelId).catch(() => null);
+  if (isSupportedTextChannel(infoChannel) && typeof infoChannel.send === 'function') {
+    await infoChannel.send({
+      embeds: [buildArrestEmbed(arrestRecord)]
+    }).catch(() => {});
+  }
+
+  return { arrestRecord };
+}
+
 function getOrCreateKartoteka(cfg, userData) {
   let kartoteka = cfg.kartoteki.find(entry => entry.userId === userData.id);
   if (!kartoteka) {
@@ -902,7 +1037,8 @@ function serializeDashboardState(guildId, panelSession = null, panelPermissions 
   const canSeeKartoteki = canSeeEverything || panelPermissions?.viewKartoteka || panelPermissions?.editKartoteka;
   const mandateBase = isRestrictedUser ? mandates.filter(mandate => mandate.targetId === panelSession.discordUserId) : mandates;
   const visibleMandates = canSeeMandates ? mandateBase : [];
-  const visibleArrests = isRestrictedUser ? [] : (canSeeArrests ? arrests : []);
+  const arrestBase = isRestrictedUser ? arrests.filter(arrest => arrest.targetId === panelSession.discordUserId) : arrests;
+  const visibleArrests = canSeeArrests ? arrestBase : [];
   const visibleKartoteki = isRestrictedUser ? [] : (canSeeKartoteki ? kartoteki : []);
 
   return {
@@ -1018,6 +1154,24 @@ async function getEarningsCandidates(guildId) {
   });
 
   return fallbacks.sort((a, b) => a.label.localeCompare(b.label, 'pl'));
+}
+
+async function getPunishmentCandidates(guildId) {
+  const guild = client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) return [];
+
+  try {
+    await guild.members.fetch();
+  } catch {}
+
+  return guild.members.cache
+    .filter(member => !member.user.bot)
+    .map(member => ({
+      id: member.id,
+      label: member.displayName ?? member.user.globalName ?? member.user.username
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'pl'))
+    .slice(0, 1000);
 }
 
 function startPanelServer() {
@@ -1318,6 +1472,130 @@ function startPanelServer() {
       scope,
       date: scope === 'date' ? date : '',
       stats
+    });
+  });
+
+  app.get('/api/dashboard/:guildId/punishment-candidates', requirePanelOfficer, async (req, res) => {
+    const candidates = await getPunishmentCandidates(req.params.guildId);
+    res.json({ candidates });
+  });
+
+  app.post('/api/dashboard/:guildId/punishments', requirePanelOfficer, async (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const guild = client.guilds.cache.get(req.params.guildId) ?? await client.guilds.fetch(req.params.guildId).catch(() => null);
+
+    if (!guild) {
+      res.status(404).json({ error: 'Nie znaleziono serwera.' });
+      return;
+    }
+
+    const issuerId = req.panelSession?.role === 'owner'
+      ? String(req.body.issuerId || '').trim()
+      : String(req.panelSession?.discordUserId || '').trim();
+    const targetId = String(req.body.targetId || '').trim();
+    const type = String(req.body.type || '').trim().toLowerCase();
+    const reason = String(req.body.reason || '').trim();
+    const amountRaw = req.body.amount;
+    const penaltyPointsRaw = req.body.penaltyPoints;
+    const duration = String(req.body.duration || '').trim();
+
+    if (!issuerId || !targetId) {
+      res.status(400).json({ error: 'Musisz wybrac osobe nadajaca kare i osobe karana.' });
+      return;
+    }
+    if (issuerId === targetId) {
+      res.status(400).json({ error: 'Nie mozesz nadac kary samemu sobie.' });
+      return;
+    }
+    if (!reason) {
+      res.status(400).json({ error: 'Musisz podac powod kary.' });
+      return;
+    }
+
+    const issuerMember = await guild.members.fetch(issuerId).catch(() => null);
+    const targetMember = await guild.members.fetch(targetId).catch(() => null);
+    if (!issuerMember || !targetMember) {
+      res.status(404).json({ error: 'Nie znaleziono jednego z uzytkownikow na serwerze.' });
+      return;
+    }
+
+    if (type === 'mandat') {
+      if (!cfg.mandateInfoChannelId) {
+        res.status(400).json({ error: 'Najpierw ustaw kanaly mandatow.' });
+        return;
+      }
+
+      const amount = Number(amountRaw);
+      let penaltyPoints = null;
+      if (penaltyPointsRaw !== null && penaltyPointsRaw !== undefined && String(penaltyPointsRaw).trim() !== '') {
+        penaltyPoints = Number(penaltyPointsRaw);
+      }
+
+      if (!Number.isInteger(amount) || amount <= 0) {
+        res.status(400).json({ error: 'Kwota mandatu musi byc liczba calkowita wieksza od 0.' });
+        return;
+      }
+      if (penaltyPoints !== null && (!Number.isInteger(penaltyPoints) || penaltyPoints < 0)) {
+        res.status(400).json({ error: 'Punkty karne musza byc liczba calkowita wieksza lub rowna 0.' });
+        return;
+      }
+
+      const { mandateRecord, privateChannel } = await createMandateCase({
+        guild,
+        cfg,
+        issuerMember,
+        targetMember,
+        amount,
+        penaltyPoints,
+        reason
+      });
+
+      addPanelActivityLog(req.panelSession, 'Nadanie kary', `Nadano mandat ${mandateRecord.id} dla ${mandateRecord.targetDisplayName}.`, {
+        guildId: req.params.guildId,
+        mandateId: mandateRecord.id
+      });
+      saveConfig();
+
+      res.json({
+        ok: true,
+        type: 'mandat',
+        id: mandateRecord.id,
+        privateChannelId: privateChannel.id
+      });
+      return;
+    }
+
+    if (!cfg.arrestInfoChannelId) {
+      res.status(400).json({ error: 'Najpierw ustaw kanaly aresztow.' });
+      return;
+    }
+
+    const normalizedType = type === 'wiezienie' ? 'wiezienie' : 'areszt';
+    if (normalizedType === 'wiezienie' && !duration) {
+      res.status(400).json({ error: 'Dla wiezienia podaj czas.' });
+      return;
+    }
+
+    const { arrestRecord } = await createArrestCase({
+      guild,
+      cfg,
+      issuerMember,
+      targetMember,
+      reason,
+      kind: normalizedType,
+      duration
+    });
+
+    addPanelActivityLog(req.panelSession, 'Nadanie kary', `Nadano ${normalizedType === 'wiezienie' ? 'wiezienie' : 'areszt'} ${arrestRecord.id} dla ${arrestRecord.targetDisplayName}.`, {
+      guildId: req.params.guildId,
+      arrestId: arrestRecord.id
+    });
+    saveConfig();
+
+    res.json({
+      ok: true,
+      type: normalizedType,
+      id: arrestRecord.id
     });
   });
 

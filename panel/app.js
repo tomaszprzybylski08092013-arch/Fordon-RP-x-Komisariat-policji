@@ -19,6 +19,7 @@ const state = {
     stats: null,
     showMandates: false
   },
+  punishmentCandidates: [],
   activityLogs: [],
   activityActor: 'all',
   panelUsers: []
@@ -46,8 +47,6 @@ const arrestsCount = document.getElementById('arrestsCount');
 const kartotekiCount = document.getElementById('kartotekiCount');
 const usersCount = document.getElementById('usersCount');
 const usersList = document.getElementById('usersList');
-const createUserForm = document.getElementById('createUserForm');
-const createUserError = document.getElementById('createUserError');
 const editorModal = document.getElementById('editorModal');
 const editorBackdrop = document.getElementById('editorBackdrop');
 const closeEditorButton = document.getElementById('closeEditorButton');
@@ -67,6 +66,17 @@ const earningsStatsGrid = document.getElementById('earningsStatsGrid');
 const earningsMandatesPanel = document.getElementById('earningsMandatesPanel');
 const earningsMandatesList = document.getElementById('earningsMandatesList');
 const earningsMandatesCount = document.getElementById('earningsMandatesCount');
+const punishmentForm = document.getElementById('punishmentForm');
+const punishmentTargetSelect = document.getElementById('punishmentTargetSelect');
+const punishmentTypeSelect = document.getElementById('punishmentTypeSelect');
+const punishmentAmountGroup = document.getElementById('punishmentAmountGroup');
+const punishmentAmountInput = document.getElementById('punishmentAmountInput');
+const punishmentPointsGroup = document.getElementById('punishmentPointsGroup');
+const punishmentPointsInput = document.getElementById('punishmentPointsInput');
+const punishmentDurationGroup = document.getElementById('punishmentDurationGroup');
+const punishmentDurationInput = document.getElementById('punishmentDurationInput');
+const punishmentReasonInput = document.getElementById('punishmentReasonInput');
+const punishmentError = document.getElementById('punishmentError');
 const activityActorSelect = document.getElementById('activityActorSelect');
 const activityLogsLoadButton = document.getElementById('activityLogsLoadButton');
 const activityLogsCount = document.getElementById('activityLogsCount');
@@ -151,8 +161,9 @@ function updateRoleView() {
     const categoryPermissions = {
       kartoteki: false,
       mandaty: true,
-      areszty: false,
+      areszty: true,
       zarobek: false,
+      'nadaj-kare': false,
       'dziennik-zdarzen': false,
       'generowanie-loginow': false,
       uzytkownicy: false,
@@ -178,6 +189,7 @@ function updateRoleView() {
     mandaty: isOwner || permissions.viewMandaty || permissions.editMandaty || permissions.deleteMandaty,
     areszty: isOwner || permissions.viewAreszty || permissions.editAreszty || permissions.deleteAreszty,
     zarobek: isOwner || permissions.viewZarobek,
+    'nadaj-kare': state.sessionAccountType === 'policjant',
     'dziennik-zdarzen': isOwner,
     uzytkownicy: isOwner,
     'generowanie-loginow': false,
@@ -544,6 +556,52 @@ async function loadEarningsCandidates() {
 
   if (state.earnings.selectedUserId && state.earnings.candidates.some(person => person.id === state.earnings.selectedUserId)) {
     earningsOfficerSelect.value = state.earnings.selectedUserId;
+  }
+}
+
+async function loadPunishmentCandidates() {
+  if (state.sessionAccountType !== 'policjant') return;
+  const result = await api(`/api/dashboard/${state.guildId}/punishment-candidates`);
+  state.punishmentCandidates = result.candidates || [];
+  punishmentTargetSelect.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = state.punishmentCandidates.length ? 'Wybierz uzytkownika' : 'Brak dostepnych osob';
+  punishmentTargetSelect.appendChild(placeholder);
+
+  for (const person of state.punishmentCandidates) {
+    const option = document.createElement('option');
+    option.value = person.id;
+    option.textContent = person.label;
+    punishmentTargetSelect.appendChild(option);
+  }
+}
+
+function updatePunishmentFormVisibility() {
+  const selectedType = punishmentTypeSelect?.value || 'mandat';
+  const isMandate = selectedType === 'mandat';
+  const isPrison = selectedType === 'wiezienie';
+
+  punishmentAmountGroup?.classList.toggle('hidden', !isMandate);
+  punishmentPointsGroup?.classList.toggle('hidden', !isMandate);
+  punishmentDurationGroup?.classList.toggle('hidden', isMandate);
+
+  if (isMandate) {
+    punishmentAmountInput?.setAttribute('required', 'required');
+  } else {
+    punishmentAmountInput?.removeAttribute('required');
+    punishmentAmountInput.value = '';
+    punishmentPointsInput.value = '';
+  }
+
+  if (isPrison) {
+    punishmentDurationInput?.setAttribute('required', 'required');
+  } else {
+    punishmentDurationInput?.removeAttribute('required');
+    if (selectedType === 'areszt') {
+      punishmentDurationInput.value = '';
+    }
   }
 }
 
@@ -982,6 +1040,9 @@ function connectRealtime() {
 
   state.socket.on('dashboard:update', async () => {
     await fetchDashboard({ manual: false });
+    if (state.sessionAccountType === 'policjant') {
+      await loadPunishmentCandidates();
+    }
     if (state.sessionRole === 'owner') {
       await loadPanelUsers();
       await loadActivityLogs();
@@ -1018,6 +1079,9 @@ async function boot() {
   connectRealtime();
   if (state.sessionRole === 'owner' || state.sessionPermissions?.viewZarobek) {
     await loadEarningsCandidates();
+  }
+  if (state.sessionAccountType === 'policjant') {
+    await loadPunishmentCandidates();
   }
   if (state.sessionRole === 'owner') {
     await loadPanelUsers();
@@ -1098,22 +1162,29 @@ earningsShowMandatesButton.addEventListener('click', async () => {
   renderEarningsMandates();
 });
 
-createUserForm?.addEventListener('submit', async event => {
+punishmentTypeSelect?.addEventListener('change', updatePunishmentFormVisibility);
+
+punishmentForm?.addEventListener('submit', async event => {
   event.preventDefault();
-  createUserError.textContent = '';
+  punishmentError.textContent = '';
 
   try {
-    const payload = Object.fromEntries(new FormData(createUserForm).entries());
-    const result = await api('/api/panel/users', {
+    const payload = Object.fromEntries(new FormData(punishmentForm).entries());
+    const result = await api(`/api/dashboard/${state.guildId}/punishments`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-    state.panelUsers = result.users || [];
-    renderPanelUsers();
-    createUserForm.reset();
-    setCategory('uzytkownicy');
+
+    punishmentForm.reset();
+    updatePunishmentFormVisibility();
+    await fetchDashboard({ manual: false });
+
+    const message = result.type === 'mandat'
+      ? `Nadano mandat ${result.id}. Utworzono prywatny kanal sprawy.`
+      : `Nadano ${result.type === 'wiezienie' ? 'wiezienie' : 'areszt'} ${result.id}.`;
+    punishmentError.textContent = message;
   } catch (error) {
-    createUserError.textContent = error.message;
+    punishmentError.textContent = error.message;
   }
 });
 
@@ -1127,6 +1198,7 @@ logoutButton.addEventListener('click', async () => {
   if (state.socket) state.socket.disconnect();
   state.snapshot = null;
   state.panelUsers = [];
+  state.punishmentCandidates = [];
   updateRoleView();
   authOverlay.classList.remove('hidden');
   setAuthMode('owner');
@@ -1135,6 +1207,9 @@ logoutButton.addEventListener('click', async () => {
 refreshButton.addEventListener('click', async () => {
   try {
     await fetchDashboard({ manual: true });
+    if (state.sessionAccountType === 'policjant') {
+      await loadPunishmentCandidates();
+    }
     if (state.sessionRole === 'owner') {
       await loadPanelUsers();
       await loadActivityLogs();
@@ -1159,6 +1234,7 @@ editorBackdrop.addEventListener('click', closeEditor);
 setAuthMode(state.authMode);
 setCategory(state.currentCategory);
 earningsDateInput.disabled = true;
+updatePunishmentFormVisibility();
 updateRoleView();
 
 boot().catch(error => {

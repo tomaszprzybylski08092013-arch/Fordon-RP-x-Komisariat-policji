@@ -59,6 +59,7 @@
         <button class="category-chip" type="button" data-category="mandaty">Mandaty</button>
         <button class="category-chip" type="button" data-category="areszty">Areszty i wiezienia</button>
         <button class="category-chip" type="button" data-category="zarobek">Zobacz zarobek</button>
+        <button class="category-chip" type="button" data-category="nadaj-kare">Nadaj kare</button>
         <button class="category-chip owner-only hidden" type="button" data-category="dziennik-zdarzen">Dziennik zdarzen</button>
         <button class="category-chip owner-only hidden" type="button" data-category="uzytkownicy">Uzytkownicy</button>
       </section>
@@ -149,6 +150,60 @@
         </section>
       </section>
 
+      <section class="panel-card category-section hidden" data-section="nadaj-kare">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Nadaj kare</p>
+            <h2>Mandat, areszt albo wiezienie z panelu</h2>
+          </div>
+        </div>
+
+        <form class="editor-form" id="punishmentForm">
+          <div class="earnings-controls">
+            <div class="form-group">
+              <label for="punishmentTargetSelect">Uzytkownik</label>
+              <select id="punishmentTargetSelect" name="targetId"></select>
+            </div>
+
+            <div class="form-group">
+              <label for="punishmentTypeSelect">Rodzaj kary</label>
+              <select id="punishmentTypeSelect" name="type">
+                <option value="mandat">Mandat</option>
+                <option value="areszt">Areszt</option>
+                <option value="wiezienie">Wiezienie</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="punishmentAmountGroup">
+              <label for="punishmentAmountInput">Kwota mandatu</label>
+              <input id="punishmentAmountInput" name="amount" type="number" min="1" placeholder="Np. 1000" />
+            </div>
+
+            <div class="form-group" id="punishmentPointsGroup">
+              <label for="punishmentPointsInput">Punkty karne</label>
+              <input id="punishmentPointsInput" name="penaltyPoints" type="number" min="0" placeholder="Np. 8" />
+            </div>
+          </div>
+
+          <div class="earnings-controls">
+            <div class="form-group" id="punishmentDurationGroup">
+              <label for="punishmentDurationInput">Na ile czasu</label>
+              <input id="punishmentDurationInput" name="duration" type="text" placeholder="Np. 30 minut albo 2 dni" />
+            </div>
+
+            <div class="form-group punishment-reason-group">
+              <label for="punishmentReasonInput">Za co</label>
+              <textarea id="punishmentReasonInput" name="reason" rows="4" placeholder="Wpisz powod kary"></textarea>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button class="primary-button" type="submit">Nadaj kare</button>
+          </div>
+          <p class="form-error" id="punishmentError"></p>
+        </form>
+      </section>
+
       <section class="panel-card category-section hidden owner-only" data-section="dziennik-zdarzen">
         <div class="section-header">
           <div>
@@ -175,30 +230,6 @@
         </div>
 
         <div class="card-list" id="activityLogsList"></div>
-      </section>
-
-      <section class="panel-card category-section hidden owner-only" data-section="generowanie-loginow">
-        <div class="section-header">
-          <div>
-            <p class="eyebrow">Generowanie loginow</p>
-            <h2>Tworzenie kont panelu</h2>
-          </div>
-        </div>
-
-        <form class="editor-form" id="createUserForm">
-          <div class="form-group">
-            <label for="createUserUsername">Nick</label>
-            <input id="createUserUsername" name="username" type="text" placeholder="Nowy uzytkownik" />
-          </div>
-          <div class="form-group">
-            <label for="createUserPassword">Haslo</label>
-            <input id="createUserPassword" name="password" type="password" placeholder="Haslo konta" />
-          </div>
-          <div class="form-actions">
-            <button class="primary-button" type="submit">Generuj</button>
-          </div>
-          <p class="form-error" id="createUserError"></p>
-        </form>
       </section>
 
       <section class="panel-card category-section hidden owner-only" data-section="uzytkownicy">
