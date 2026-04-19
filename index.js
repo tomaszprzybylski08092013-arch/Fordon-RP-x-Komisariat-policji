@@ -49,7 +49,10 @@ const PANEL_PERMISSION_KEYS = [
   'viewAreszty',
   'editAreszty',
   'deleteAreszty',
-  'viewZarobek'
+  'viewZarobek',
+  'issueMandaty',
+  'issueAreszty',
+  'issueWiezienia'
 ];
 
 const client = new Client({
@@ -141,7 +144,10 @@ function getDefaultPanelPermissions() {
     viewAreszty: false,
     editAreszty: false,
     deleteAreszty: false,
-    viewZarobek: false
+    viewZarobek: false,
+    issueMandaty: false,
+    issueAreszty: false,
+    issueWiezienia: false
   };
 }
 
@@ -161,7 +167,9 @@ function serializePanelUser(user) {
     accountType: user.accountType ?? 'uzytkownik',
     discordUserId: user.discordUserId ?? null,
     createdAt: user.createdAt,
-    permissions: normalizePanelPermissions(user.permissions),
+    permissions: (user.accountType ?? 'uzytkownik') === 'policjant'
+      ? normalizePolicePanelPermissions(user.permissions)
+      : normalizePanelPermissions(user.permissions),
     canEditPermissions: (user.accountType ?? 'uzytkownik') === 'policjant'
   };
 }
@@ -176,7 +184,10 @@ function getPoliceDefaultPermissions() {
     viewAreszty: true,
     editAreszty: true,
     deleteAreszty: false,
-    viewZarobek: true
+    viewZarobek: true,
+    issueMandaty: true,
+    issueAreszty: true,
+    issueWiezienia: true
   };
 }
 
@@ -190,8 +201,21 @@ function getRestrictedUserPermissions() {
     viewAreszty: true,
     editAreszty: false,
     deleteAreszty: false,
-    viewZarobek: false
+    viewZarobek: false,
+    issueMandaty: false,
+    issueAreszty: false,
+    issueWiezienia: false
   };
+}
+
+function normalizePolicePanelPermissions(input = {}) {
+  const defaults = getPoliceDefaultPermissions();
+  for (const key of PANEL_PERMISSION_KEYS) {
+    if (key in input) {
+      defaults[key] = Boolean(input[key]);
+    }
+  }
+  return defaults;
 }
 
 function ensureUniquePanelUsername(baseUsername, currentUserId = '') {
@@ -242,7 +266,7 @@ function upsertDiscordPanelUser(member) {
   account.updatedAt = Date.now();
 
   if (accountType === 'policjant') {
-    account.permissions = normalizePanelPermissions(
+    account.permissions = normalizePolicePanelPermissions(
       Object.keys(account.permissions || {}).length ? account.permissions : getPoliceDefaultPermissions()
     );
   } else {
@@ -383,7 +407,7 @@ function requirePanelAuth(req, res, next) {
       req.panelSession.accountType = account.accountType ?? 'uzytkownik';
       req.panelSession.discordUserId = account.discordUserId ?? null;
       req.panelPermissions = account.accountType === 'policjant'
-        ? normalizePanelPermissions(account.permissions)
+        ? normalizePolicePanelPermissions(account.permissions)
         : getRestrictedUserPermissions();
     } else {
       req.panelPermissions = null;
@@ -416,6 +440,19 @@ function requirePanelOfficer(req, res, next) {
   }
 
   res.status(403).json({ error: 'Ta sekcja jest tylko dla policjantow.' });
+}
+
+function canUsePunishmentPanel(session, permissions = null) {
+  if (session?.role === 'owner') return true;
+  return Boolean(permissions?.issueMandaty || permissions?.issueAreszty || permissions?.issueWiezienia);
+}
+
+function canIssuePunishmentType(session, permissions = null, type = '') {
+  if (session?.role === 'owner') return true;
+  if (type === 'mandat') return Boolean(permissions?.issueMandaty);
+  if (type === 'areszt') return Boolean(permissions?.issueAreszty);
+  if (type === 'wiezienie') return Boolean(permissions?.issueWiezienia);
+  return false;
 }
 
 function requirePanelPermission(permissionKey) {
@@ -1549,7 +1586,7 @@ function startPanelServer() {
       saveConfig();
 
       const permissions = account.accountType === 'policjant'
-        ? normalizePanelPermissions(account.permissions)
+        ? normalizePolicePanelPermissions(account.permissions)
         : getRestrictedUserPermissions();
 
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -1739,6 +1776,10 @@ function startPanelServer() {
   });
 
   app.get('/api/dashboard/:guildId/punishment-candidates', requirePanelOfficer, async (req, res) => {
+    if (!canUsePunishmentPanel(req.panelSession, req.panelPermissions)) {
+      res.status(403).json({ error: 'Brak permisji do nadawania kar.' });
+      return;
+    }
     const candidates = await getPunishmentCandidates(req.params.guildId);
     res.json({ candidates });
   });
@@ -1773,6 +1814,10 @@ function startPanelServer() {
     }
     if (!reason) {
       res.status(400).json({ error: 'Musisz podac powod kary.' });
+      return;
+    }
+    if (!canIssuePunishmentType(req.panelSession, req.panelPermissions, type)) {
+      res.status(403).json({ error: 'Brak permisji do nadania tej kary.' });
       return;
     }
 

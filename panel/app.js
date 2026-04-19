@@ -104,7 +104,10 @@ const PERMISSION_LABELS = {
   viewAreszty: 'Widok aresztow',
   editAreszty: 'Edycja aresztow',
   deleteAreszty: 'Usuwanie aresztow',
-  viewZarobek: 'Widok zarobku'
+  viewZarobek: 'Widok zarobku',
+  issueMandaty: 'Nadawanie mandatow',
+  issueAreszty: 'Nadawanie aresztow',
+  issueWiezienia: 'Nadawanie wiezienia'
 };
 
 function getHeaders() {
@@ -205,7 +208,7 @@ function updateRoleView() {
     mandaty: isOwner || permissions.viewMandaty || permissions.editMandaty || permissions.deleteMandaty,
     areszty: isOwner || permissions.viewAreszty || permissions.editAreszty || permissions.deleteAreszty,
     zarobek: isOwner || permissions.viewZarobek,
-    'nadaj-kare': state.sessionAccountType === 'policjant',
+    'nadaj-kare': isOwner || (state.sessionAccountType === 'policjant' && (permissions.issueMandaty || permissions.issueAreszty || permissions.issueWiezienia)),
     'dziennik-zdarzen': isOwner,
     uzytkownicy: isOwner,
     'generowanie-loginow': false,
@@ -222,7 +225,53 @@ function updateRoleView() {
   }
 
   earningsShowMandatesButton.classList.toggle('hidden', !hasPanelPermission('viewMandaty'));
+  syncPunishmentTypeOptions();
 
+}
+
+function getAllowedPunishmentTypes() {
+  if (state.sessionRole === 'owner') {
+    return ['mandat', 'areszt', 'wiezienie'];
+  }
+
+  const allowed = [];
+  if (state.sessionPermissions?.issueMandaty) allowed.push('mandat');
+  if (state.sessionPermissions?.issueAreszty) allowed.push('areszt');
+  if (state.sessionPermissions?.issueWiezienia) allowed.push('wiezienie');
+  return allowed;
+}
+
+function canAccessPunishmentPanel() {
+  return state.sessionRole === 'owner' || getAllowedPunishmentTypes().length > 0;
+}
+
+function syncPunishmentTypeOptions() {
+  if (!punishmentTypeSelect) return;
+
+  const labels = {
+    mandat: 'Mandat',
+    areszt: 'Areszt',
+    wiezienie: 'Wiezienie'
+  };
+  const allowedTypes = getAllowedPunishmentTypes();
+  const currentValue = punishmentTypeSelect.value;
+  punishmentTypeSelect.innerHTML = '';
+
+  for (const type of allowedTypes) {
+    const option = document.createElement('option');
+    option.value = type;
+    option.textContent = labels[type];
+    punishmentTypeSelect.appendChild(option);
+  }
+
+  punishmentTypeSelect.disabled = allowedTypes.length === 0;
+  if (allowedTypes.includes(currentValue)) {
+    punishmentTypeSelect.value = currentValue;
+  } else if (allowedTypes.length > 0) {
+    punishmentTypeSelect.value = allowedTypes[0];
+  }
+
+  updatePunishmentFormVisibility();
 }
 
 async function api(path, options = {}) {
@@ -759,9 +808,14 @@ async function loadPunishmentCandidates() {
 }
 
 function updatePunishmentFormVisibility() {
+  const allowedTypes = getAllowedPunishmentTypes();
+  const hasAnyPunishmentPermission = state.sessionRole === 'owner' || allowedTypes.length > 0;
   const selectedType = punishmentTypeSelect?.value || 'mandat';
   const isMandate = selectedType === 'mandat';
   const isPrison = selectedType === 'wiezienie';
+
+  punishmentForm?.classList.toggle('hidden', !hasAnyPunishmentPermission);
+  punishmentError.textContent = hasAnyPunishmentPermission ? punishmentError.textContent : 'To konto nie ma permisji do nadawania kar.';
 
   punishmentAmountGroup?.classList.toggle('hidden', !isMandate);
   punishmentPointsGroup?.classList.toggle('hidden', !isMandate);
@@ -938,9 +992,12 @@ function openPermissionsEditor(user) {
       { name: 'viewMandaty', label: 'Widok mandatow', type: 'select', value: String(Boolean(permissions.viewMandaty)), options: boolOptions },
       { name: 'editMandaty', label: 'Edycja mandatow', type: 'select', value: String(Boolean(permissions.editMandaty)), options: boolOptions },
       { name: 'deleteMandaty', label: 'Usuwanie mandatow', type: 'select', value: String(Boolean(permissions.deleteMandaty)), options: boolOptions },
+      { name: 'issueMandaty', label: 'Nadawanie mandatow', type: 'select', value: String(Boolean(permissions.issueMandaty)), options: boolOptions },
       { name: 'viewAreszty', label: 'Widok aresztow', type: 'select', value: String(Boolean(permissions.viewAreszty)), options: boolOptions },
       { name: 'editAreszty', label: 'Edycja aresztow', type: 'select', value: String(Boolean(permissions.editAreszty)), options: boolOptions },
       { name: 'deleteAreszty', label: 'Usuwanie aresztow', type: 'select', value: String(Boolean(permissions.deleteAreszty)), options: boolOptions },
+      { name: 'issueAreszty', label: 'Nadawanie aresztow', type: 'select', value: String(Boolean(permissions.issueAreszty)), options: boolOptions },
+      { name: 'issueWiezienia', label: 'Nadawanie wiezienia', type: 'select', value: String(Boolean(permissions.issueWiezienia)), options: boolOptions },
       { name: 'viewZarobek', label: 'Widok zarobku', type: 'select', value: String(Boolean(permissions.viewZarobek)), options: boolOptions }
     ],
     onSubmit: async payload => {
@@ -1223,7 +1280,7 @@ function connectRealtime() {
 
   state.socket.on('dashboard:update', async () => {
     await fetchDashboard({ manual: false });
-    if (state.sessionAccountType === 'policjant') {
+    if (canAccessPunishmentPanel()) {
       await loadPunishmentCandidates();
     }
     if (state.sessionRole === 'owner') {
@@ -1265,7 +1322,7 @@ async function boot() {
   if (state.sessionRole === 'owner' || state.sessionPermissions?.viewZarobek) {
     await loadEarningsCandidates();
   }
-  if (state.sessionAccountType === 'policjant') {
+  if (canAccessPunishmentPanel()) {
     await loadPunishmentCandidates();
   }
   if (state.sessionRole === 'owner') {
@@ -1354,6 +1411,9 @@ punishmentForm?.addEventListener('submit', async event => {
   punishmentError.textContent = '';
 
   try {
+    if (!getAllowedPunishmentTypes().length) {
+      throw new Error('To konto nie ma permisji do nadawania kar.');
+    }
     const payload = Object.fromEntries(new FormData(punishmentForm).entries());
     const result = await api(`/api/dashboard/${state.guildId}/punishments`, {
       method: 'POST',
@@ -1392,7 +1452,7 @@ logoutButton.addEventListener('click', async () => {
 refreshButton.addEventListener('click', async () => {
   try {
     await fetchDashboard({ manual: true });
-    if (state.sessionAccountType === 'policjant') {
+    if (canAccessPunishmentPanel()) {
       await loadPunishmentCandidates();
     }
     if (state.sessionRole === 'owner') {
