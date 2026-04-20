@@ -1167,42 +1167,29 @@ function renderWantedListCard(entry) {
   const editButton = node.querySelector('.action-edit');
   const deleteButton = node.querySelector('.action-delete');
 
-  editButton.textContent = 'Usun list';
-  deleteButton.textContent = 'Odswiez';
+  editButton.textContent = 'Usun';
+  deleteButton.remove();
 
-  if (entry.status === 'aktywny' && (state.sessionRole === 'owner' || hasPanelPermission('removeListyGoncze'))) {
+  if (state.sessionRole === 'owner' || hasPanelPermission('removeListyGoncze')) {
     editButton.addEventListener('click', () => {
-      openEditor({
-        eyebrow: 'Usun list gonczy',
-        title: `${entry.targetLabel}`,
-        fields: [
-          { name: 'reason', label: 'Powod usuniecia', type: 'textarea', value: '' },
-          { name: 'imageUrl', label: 'Zdjecie podejrzanego (URL)', type: 'text', value: entry.imageUrl || '', placeholder: 'https://...' }
-        ],
-        onSubmit: payload => api(`/api/dashboard/${state.guildId}/wanted-lists`, {
-          method: 'POST',
-          body: JSON.stringify({
-            action: 'usun',
-            targetId: entry.targetId,
-            reason: payload.reason,
-            imageUrl: payload.imageUrl
-          })
-        })
-      });
+      deleteWantedList(entry.id).catch(error => window.alert(error.message));
     });
   } else {
     editButton.remove();
   }
-
-  deleteButton.addEventListener('click', () => {
-    fetchDashboard({ manual: false }).catch(error => window.alert(error.message));
-  });
 
   if (!actions.children.length) {
     actions.remove();
   }
 
   return node;
+}
+
+async function deleteWantedList(wantedListId) {
+  await api(`/api/dashboard/${state.guildId}/wanted-lists/${wantedListId}`, {
+    method: 'DELETE'
+  });
+  await fetchDashboard({ manual: false });
 }
 
 function renderMandates(snapshot) {
@@ -1355,26 +1342,10 @@ function renderKartoteki(snapshot) {
         } else {
           const wantedList = snapshot.wantedLists.find(item => item.id === entry.wantedListId);
           editButton.remove();
-          if (wantedList?.status === 'aktywny' && (state.sessionRole === 'owner' || hasPanelPermission('removeListyGoncze'))) {
-            deleteButton.textContent = 'Usun list';
+          if (wantedList && (state.sessionRole === 'owner' || hasPanelPermission('removeListyGoncze'))) {
+            deleteButton.textContent = 'Usun';
             deleteButton.addEventListener('click', () => {
-              openEditor({
-                eyebrow: 'Usun list gonczy',
-                title: wantedList.targetLabel,
-                fields: [
-                  { name: 'reason', label: 'Powod usuniecia', type: 'textarea', value: '' },
-                  { name: 'imageUrl', label: 'Zdjecie podejrzanego (URL)', type: 'text', value: wantedList.imageUrl || '', placeholder: 'https://...' }
-                ],
-                onSubmit: payload => api(`/api/dashboard/${state.guildId}/wanted-lists`, {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    action: 'usun',
-                    targetId: wantedList.targetId,
-                    reason: payload.reason,
-                    imageUrl: payload.imageUrl
-                  })
-                })
-              });
+              deleteWantedList(wantedList.id).catch(error => window.alert(error.message));
             });
             actions.appendChild(deleteButton);
           } else {

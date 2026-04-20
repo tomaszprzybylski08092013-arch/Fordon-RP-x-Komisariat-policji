@@ -30,6 +30,7 @@ if (!DISCORD_TOKEN || !DISCORD_APP_ID || !GUILD_ID) {
 
 const CONFIG_OWNER_IDS = ['1034884709479612436', '1378291577973379117'];
 const MANDATE_PAYMENT_USER_ID = '1034884709479612436';
+const MANDATE_CLOSE_ALLOWED_IDS = ['1034884709479612436', '1085946513093566567', '1378291577973379117'];
 const EARNINGS_ROLE_ID = '1495385016656593007';
 const PANEL_PORT = Number(process.env.PORT || 3000);
 const PANEL_ADMIN_KEY = (process.env.PANEL_ADMIN_KEY || '').trim();
@@ -880,8 +881,8 @@ function assertMandateActionAllowed(mandate, action, actorId) {
   }
 
   if (action === 'zamknij') {
-    if (actorId !== mandate.issuerId) {
-      const error = new Error('Tylko osoba, ktora wystawila mandat, moze zamknac sprawe.');
+    if (actorId !== mandate.issuerId && !MANDATE_CLOSE_ALLOWED_IDS.includes(actorId)) {
+      const error = new Error('Tylko osoba, ktora wystawila mandat, albo wybrane osoby administracji moga zamknac sprawe.');
       error.statusCode = 403;
       throw error;
     }
@@ -1259,6 +1260,21 @@ async function removeWantedListRecord({ guild, cfg, removerMember, targetMember,
   }
 
   return record;
+}
+
+function deleteWantedListRecord(cfg, wantedListId) {
+  const index = cfg.wantedLists.findIndex(item => item.id === wantedListId);
+  if (index === -1) {
+    const error = new Error('Nie znaleziono tego listu gonczego.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const [removedRecord] = cfg.wantedLists.splice(index, 1);
+  for (const kartoteka of cfg.kartoteki) {
+    kartoteka.entries = (kartoteka.entries || []).filter(entry => !(entry.type === 'wanted-list' && entry.wantedListId === wantedListId));
+  }
+  return removedRecord;
 }
 
 function getOrCreateKartoteka(cfg, userData) {
@@ -2277,6 +2293,27 @@ function startPanelServer() {
       res.json({ ok: true, action, wantedList: serializeWantedList(record) });
     } catch (error) {
       res.status(error.statusCode || 400).json({ error: error.message || 'Nie udalo sie obsluzyc listu gonczego.' });
+    }
+  });
+
+  app.delete('/api/dashboard/:guildId/wanted-lists/:wantedListId', requirePanelOfficer, (req, res) => {
+    if (req.panelSession?.role !== 'owner' && !req.panelPermissions?.removeListyGoncze) {
+      res.status(403).json({ error: 'Brak permisji do trwalego usuwania listow gonczych.' });
+      return;
+    }
+
+    const cfg = ensureGuild(req.params.guildId);
+
+    try {
+      const removedRecord = deleteWantedListRecord(cfg, String(req.params.wantedListId || '').trim().toUpperCase());
+      addPanelActivityLog(req.panelSession, 'Trwale usuniecie listu gonczego', `Usunieto calkowicie list gonczy ${removedRecord.id} dla ${removedRecord.targetDisplayName}.`, {
+        guildId: req.params.guildId,
+        wantedListId: removedRecord.id
+      });
+      saveConfig();
+      res.json({ ok: true, removedId: removedRecord.id });
+    } catch (error) {
+      res.status(error.statusCode || 400).json({ error: error.message || 'Nie udalo sie usunac listu gonczego.' });
     }
   });
 
