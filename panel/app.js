@@ -21,6 +21,7 @@ const state = {
     showMandates: false
   },
   punishmentCandidates: [],
+  wantedListCandidates: [],
   activityLogs: [],
   activityActor: 'all',
   panelUsers: [],
@@ -43,10 +44,12 @@ const liveDot = document.getElementById('liveDot');
 const liveStatusLabel = document.getElementById('liveStatusLabel');
 const mandatesList = document.getElementById('mandatesList');
 const arrestsList = document.getElementById('arrestsList');
+const wantedListsList = document.getElementById('wantedListsList');
 const kartotekiGrid = document.getElementById('kartotekiGrid');
 const refreshButton = document.getElementById('refreshButton');
 const mandatesCount = document.getElementById('mandatesCount');
 const arrestsCount = document.getElementById('arrestsCount');
+const wantedListsCount = document.getElementById('wantedListsCount');
 const kartotekiCount = document.getElementById('kartotekiCount');
 const usersCount = document.getElementById('usersCount');
 const usersList = document.getElementById('usersList');
@@ -82,6 +85,12 @@ const punishmentDescriptionGroup = document.getElementById('punishmentDescriptio
 const punishmentDescriptionInput = document.getElementById('punishmentDescriptionInput');
 const punishmentReasonInput = document.getElementById('punishmentReasonInput');
 const punishmentError = document.getElementById('punishmentError');
+const wantedListForm = document.getElementById('wantedListForm');
+const wantedListTargetSelect = document.getElementById('wantedListTargetSelect');
+const wantedListActionSelect = document.getElementById('wantedListActionSelect');
+const wantedListImageInput = document.getElementById('wantedListImageInput');
+const wantedListReasonInput = document.getElementById('wantedListReasonInput');
+const wantedListError = document.getElementById('wantedListError');
 const activityActorSelect = document.getElementById('activityActorSelect');
 const activityLogsLoadButton = document.getElementById('activityLogsLoadButton');
 const activityLogsCount = document.getElementById('activityLogsCount');
@@ -104,6 +113,9 @@ const PERMISSION_LABELS = {
   viewAreszty: 'Widok aresztow',
   editAreszty: 'Edycja aresztow',
   deleteAreszty: 'Usuwanie aresztow',
+  viewListyGoncze: 'Widok listow gonczych',
+  issueListyGoncze: 'Nadawanie listow gonczych',
+  removeListyGoncze: 'Usuwanie listow gonczych',
   viewZarobek: 'Widok zarobku',
   issueMandaty: 'Nadawanie mandatow',
   issueAreszty: 'Nadawanie aresztow',
@@ -181,6 +193,7 @@ function updateRoleView() {
       kartoteki: false,
       mandaty: true,
       areszty: true,
+      'listy-goncze': true,
       zarobek: false,
       'nadaj-kare': false,
       'dziennik-zdarzen': false,
@@ -207,6 +220,7 @@ function updateRoleView() {
     kartoteki: isOwner || permissions.viewKartoteka || permissions.editKartoteka,
     mandaty: isOwner || permissions.viewMandaty || permissions.editMandaty || permissions.deleteMandaty,
     areszty: isOwner || permissions.viewAreszty || permissions.editAreszty || permissions.deleteAreszty,
+    'listy-goncze': isOwner || permissions.viewListyGoncze || permissions.issueListyGoncze || permissions.removeListyGoncze,
     zarobek: isOwner || permissions.viewZarobek,
     'nadaj-kare': isOwner || (state.sessionAccountType === 'policjant' && (permissions.issueMandaty || permissions.issueAreszty || permissions.issueWiezienia)),
     'dziennik-zdarzen': isOwner,
@@ -226,6 +240,7 @@ function updateRoleView() {
 
   earningsShowMandatesButton.classList.toggle('hidden', !hasPanelPermission('viewMandaty'));
   syncPunishmentTypeOptions();
+  updateWantedListFormVisibility();
 
 }
 
@@ -243,6 +258,23 @@ function getAllowedPunishmentTypes() {
 
 function canAccessPunishmentPanel() {
   return state.sessionRole === 'owner' || getAllowedPunishmentTypes().length > 0;
+}
+
+function canAccessWantedListPanel() {
+  if (state.sessionRole === 'owner') return true;
+  if (state.sessionAccountType === 'uzytkownik') return true;
+  return Boolean(state.sessionPermissions?.viewListyGoncze || state.sessionPermissions?.issueListyGoncze || state.sessionPermissions?.removeListyGoncze);
+}
+
+function getAllowedWantedListActions() {
+  if (state.sessionRole === 'owner') {
+    return ['nadaj', 'usun'];
+  }
+
+  const allowed = [];
+  if (state.sessionPermissions?.issueListyGoncze) allowed.push('nadaj');
+  if (state.sessionPermissions?.removeListyGoncze) allowed.push('usun');
+  return allowed;
 }
 
 function syncPunishmentTypeOptions() {
@@ -789,7 +821,7 @@ async function loadEarningsCandidates() {
 }
 
 async function loadPunishmentCandidates() {
-  if (state.sessionAccountType !== 'policjant') return;
+  if (state.sessionRole !== 'owner' && state.sessionAccountType !== 'policjant') return;
   const result = await api(`/api/dashboard/${state.guildId}/punishment-candidates`);
   state.punishmentCandidates = result.candidates || [];
   punishmentTargetSelect.innerHTML = '';
@@ -804,6 +836,25 @@ async function loadPunishmentCandidates() {
     option.value = person.id;
     option.textContent = person.label;
     punishmentTargetSelect.appendChild(option);
+  }
+}
+
+async function loadWantedListCandidates() {
+  if (state.sessionRole !== 'owner' && state.sessionAccountType !== 'policjant') return;
+  const result = await api(`/api/dashboard/${state.guildId}/wanted-list-candidates`);
+  state.wantedListCandidates = result.candidates || [];
+  wantedListTargetSelect.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = state.wantedListCandidates.length ? 'Wybierz uzytkownika' : 'Brak dostepnych osob';
+  wantedListTargetSelect.appendChild(placeholder);
+
+  for (const person of state.wantedListCandidates) {
+    const option = document.createElement('option');
+    option.value = person.id;
+    option.textContent = person.label;
+    wantedListTargetSelect.appendChild(option);
   }
 }
 
@@ -839,6 +890,43 @@ function updatePunishmentFormVisibility() {
       punishmentDurationInput.value = '';
     }
   }
+}
+
+function updateWantedListFormVisibility() {
+  if (!wantedListForm) return;
+  const isRestrictedUser = state.sessionRole === 'user' && state.sessionAccountType === 'uzytkownik';
+  const allowedActions = getAllowedWantedListActions();
+  const canUseForm = state.sessionRole === 'owner' || allowedActions.length > 0;
+  wantedListForm.classList.toggle('hidden', isRestrictedUser || !canUseForm);
+
+  if (isRestrictedUser || !canUseForm) {
+    wantedListError.textContent = canUseForm ? '' : 'To konto nie ma permisji do obslugi listow gonczych.';
+    return;
+  }
+
+  const currentValue = wantedListActionSelect.value;
+  const labels = {
+    nadaj: 'Nadaj list gonczy',
+    usun: 'Usun list gonczy'
+  };
+  const allowed = state.sessionRole === 'owner' ? ['nadaj', 'usun'] : allowedActions;
+  wantedListActionSelect.innerHTML = '';
+
+  for (const action of allowed) {
+    const option = document.createElement('option');
+    option.value = action;
+    option.textContent = labels[action];
+    wantedListActionSelect.appendChild(option);
+  }
+
+  const available = [...wantedListActionSelect.options].map(option => option.value);
+  if (available.includes(currentValue)) {
+    wantedListActionSelect.value = currentValue;
+  } else if (available.length > 0) {
+    wantedListActionSelect.value = available[0];
+  }
+
+  wantedListError.textContent = '';
 }
 
 async function fetchEarningsSummary() {
@@ -998,6 +1086,9 @@ function openPermissionsEditor(user) {
       { name: 'deleteAreszty', label: 'Usuwanie aresztow', type: 'select', value: String(Boolean(permissions.deleteAreszty)), options: boolOptions },
       { name: 'issueAreszty', label: 'Nadawanie aresztow', type: 'select', value: String(Boolean(permissions.issueAreszty)), options: boolOptions },
       { name: 'issueWiezienia', label: 'Nadawanie wiezienia', type: 'select', value: String(Boolean(permissions.issueWiezienia)), options: boolOptions },
+      { name: 'viewListyGoncze', label: 'Widok listow gonczych', type: 'select', value: String(Boolean(permissions.viewListyGoncze)), options: boolOptions },
+      { name: 'issueListyGoncze', label: 'Nadawanie listow gonczych', type: 'select', value: String(Boolean(permissions.issueListyGoncze)), options: boolOptions },
+      { name: 'removeListyGoncze', label: 'Usuwanie listow gonczych', type: 'select', value: String(Boolean(permissions.removeListyGoncze)), options: boolOptions },
       { name: 'viewZarobek', label: 'Widok zarobku', type: 'select', value: String(Boolean(permissions.viewZarobek)), options: boolOptions }
     ],
     onSubmit: async payload => {
@@ -1051,6 +1142,69 @@ function renderArrestCard(arrest) {
   return node;
 }
 
+function renderWantedListCard(entry) {
+  const node = listCardTemplate.content.firstElementChild.cloneNode(true);
+  node.querySelector('.list-title').textContent = `${entry.id} | ${entry.targetLabel}`;
+  node.querySelector('.status-badge').textContent = entry.statusLabel;
+  node.querySelector('.list-meta').textContent = `Nadal ${entry.issuerLabel} | ${entry.createdAtLabel}`;
+  node.querySelector('.list-description').textContent = entry.reason;
+
+  const tags = node.querySelector('.list-tags');
+  tags.appendChild(createTag(`Status: ${entry.statusLabel}`));
+  if (entry.removedAtLabel) tags.appendChild(createTag(`Usunieto: ${entry.removedAtLabel}`));
+  if (entry.removeReason) tags.appendChild(createTag(`Powod usuniecia: ${entry.removeReason}`));
+  if (entry.imageUrl) {
+    const link = document.createElement('a');
+    link.href = entry.status === 'usuniety' && entry.removeImageUrl ? entry.removeImageUrl : entry.imageUrl;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.className = 'tag-pill';
+    link.textContent = 'Zobacz zdjecie';
+    tags.appendChild(link);
+  }
+
+  const actions = node.querySelector('.card-actions');
+  const editButton = node.querySelector('.action-edit');
+  const deleteButton = node.querySelector('.action-delete');
+
+  editButton.textContent = 'Usun list';
+  deleteButton.textContent = 'Odswiez';
+
+  if (entry.status === 'aktywny' && (state.sessionRole === 'owner' || hasPanelPermission('removeListyGoncze'))) {
+    editButton.addEventListener('click', () => {
+      openEditor({
+        eyebrow: 'Usun list gonczy',
+        title: `${entry.targetLabel}`,
+        fields: [
+          { name: 'reason', label: 'Powod usuniecia', type: 'textarea', value: '' },
+          { name: 'imageUrl', label: 'Zdjecie podejrzanego (URL)', type: 'text', value: entry.imageUrl || '', placeholder: 'https://...' }
+        ],
+        onSubmit: payload => api(`/api/dashboard/${state.guildId}/wanted-lists`, {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'usun',
+            targetId: entry.targetId,
+            reason: payload.reason,
+            imageUrl: payload.imageUrl
+          })
+        })
+      });
+    });
+  } else {
+    editButton.remove();
+  }
+
+  deleteButton.addEventListener('click', () => {
+    fetchDashboard({ manual: false }).catch(error => window.alert(error.message));
+  });
+
+  if (!actions.children.length) {
+    actions.remove();
+  }
+
+  return node;
+}
+
 function renderMandates(snapshot) {
   mandatesList.innerHTML = '';
   mandatesCount.textContent = String(snapshot.mandates.length);
@@ -1079,6 +1233,20 @@ function renderArrests(snapshot) {
   }
 }
 
+function renderWantedLists(snapshot) {
+  wantedListsList.innerHTML = '';
+  wantedListsCount.textContent = String(snapshot.wantedLists.length);
+
+  if (snapshot.wantedLists.length === 0) {
+    wantedListsList.innerHTML = '<p class="muted">Brak listow gonczych do pokazania.</p>';
+    return;
+  }
+
+  for (const entry of snapshot.wantedLists) {
+    wantedListsList.appendChild(renderWantedListCard(entry));
+  }
+}
+
 function renderKartoteki(snapshot) {
   kartotekiGrid.innerHTML = '';
   kartotekiCount.textContent = String(snapshot.kartoteki.length);
@@ -1100,7 +1268,8 @@ function renderKartoteki(snapshot) {
       createTag(`Mandaty: ${kartoteka.stats.mandateCount}`),
       createTag(`Oplacone: ${kartoteka.stats.paidMandateCount}`),
       createTag(`Punkty: ${kartoteka.stats.penaltyPointsTotal}`),
-      createTag(`Areszty: ${kartoteka.stats.arrestCount}`)
+      createTag(`Areszty: ${kartoteka.stats.arrestCount}`),
+      createTag(`Listy goncze: ${kartoteka.stats.wantedListCount}`)
     );
 
     const history = node.querySelector('.kartoteka-history');
@@ -1116,13 +1285,17 @@ function renderKartoteki(snapshot) {
         title.className = 'history-item-title';
         title.textContent = entry.type === 'mandat'
           ? `${entry.mandateId} | ${entry.statusLabel}`
-          : `${entry.arrestId} | ${entry.kindLabel}`;
+          : entry.type === 'arrest'
+            ? `${entry.arrestId} | ${entry.kindLabel}`
+            : `${entry.wantedListId} | ${entry.wantedListStatusLabel}`;
 
         const copy = document.createElement('p');
         copy.className = 'history-item-copy';
         copy.textContent = entry.type === 'mandat'
           ? `${entry.reason}${entry.description?.trim() ? ` | ${entry.description.trim()}` : ''} | ${entry.amount} PLN | ${entry.penaltyPoints ?? 0} pkt`
-          : `${entry.reason}${entry.duration ? ` | ${entry.duration}` : ''}`;
+          : entry.type === 'arrest'
+            ? `${entry.reason}${entry.duration ? ` | ${entry.duration}` : ''}`
+            : `${entry.reason}${entry.removeReason ? ` | Usunieto: ${entry.removeReason}` : ''}`;
 
         const actions = document.createElement('div');
         actions.className = 'history-item-actions';
@@ -1158,7 +1331,7 @@ function renderKartoteki(snapshot) {
 
           if (allowEdit) actions.appendChild(editButton);
           if (allowDelete) actions.appendChild(deleteButton);
-        } else {
+        } else if (entry.type === 'arrest') {
           const arrest = snapshot.arrests.find(item => item.id === entry.arrestId);
           let allowEdit = false;
           let allowDelete = false;
@@ -1179,6 +1352,34 @@ function renderKartoteki(snapshot) {
 
           if (allowEdit) actions.appendChild(editButton);
           if (allowDelete) actions.appendChild(deleteButton);
+        } else {
+          const wantedList = snapshot.wantedLists.find(item => item.id === entry.wantedListId);
+          editButton.remove();
+          if (wantedList?.status === 'aktywny' && (state.sessionRole === 'owner' || hasPanelPermission('removeListyGoncze'))) {
+            deleteButton.textContent = 'Usun list';
+            deleteButton.addEventListener('click', () => {
+              openEditor({
+                eyebrow: 'Usun list gonczy',
+                title: wantedList.targetLabel,
+                fields: [
+                  { name: 'reason', label: 'Powod usuniecia', type: 'textarea', value: '' },
+                  { name: 'imageUrl', label: 'Zdjecie podejrzanego (URL)', type: 'text', value: wantedList.imageUrl || '', placeholder: 'https://...' }
+                ],
+                onSubmit: payload => api(`/api/dashboard/${state.guildId}/wanted-lists`, {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    action: 'usun',
+                    targetId: wantedList.targetId,
+                    reason: payload.reason,
+                    imageUrl: payload.imageUrl
+                  })
+                })
+              });
+            });
+            actions.appendChild(deleteButton);
+          } else {
+            deleteButton.remove();
+          }
         }
 
         wrapper.append(title, copy);
@@ -1215,6 +1416,7 @@ function renderKartoteki(snapshot) {
 function render(snapshot) {
   renderMandates(snapshot);
   renderArrests(snapshot);
+  renderWantedLists(snapshot);
   renderKartoteki(snapshot);
   renderEarningsStats();
   renderEarningsMandates();
@@ -1283,6 +1485,9 @@ function connectRealtime() {
     if (canAccessPunishmentPanel()) {
       await loadPunishmentCandidates();
     }
+    if (state.sessionRole === 'owner' || state.sessionAccountType === 'policjant') {
+      await loadWantedListCandidates();
+    }
     if (state.sessionRole === 'owner') {
       await loadPanelUsers();
       await loadActivityLogs();
@@ -1324,6 +1529,9 @@ async function boot() {
   }
   if (canAccessPunishmentPanel()) {
     await loadPunishmentCandidates();
+  }
+  if (state.sessionRole === 'owner' || state.sessionAccountType === 'policjant') {
+    await loadWantedListCandidates();
   }
   if (state.sessionRole === 'owner') {
     await loadPanelUsers();
@@ -1433,6 +1641,32 @@ punishmentForm?.addEventListener('submit', async event => {
   }
 });
 
+wantedListForm?.addEventListener('submit', async event => {
+  event.preventDefault();
+  wantedListError.textContent = '';
+
+  try {
+    if (!canAccessWantedListPanel()) {
+      throw new Error('To konto nie ma permisji do obslugi listow gonczych.');
+    }
+    const payload = Object.fromEntries(new FormData(wantedListForm).entries());
+    const result = await api(`/api/dashboard/${state.guildId}/wanted-lists`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    wantedListForm.reset();
+    updateWantedListFormVisibility();
+    await fetchDashboard({ manual: false });
+
+    wantedListError.textContent = result.action === 'usun'
+      ? `Usunieto list gonczy ${result.wantedList?.id || ''}.`
+      : `Nadano list gonczy ${result.wantedList?.id || ''}.`;
+  } catch (error) {
+    wantedListError.textContent = error.message;
+  }
+});
+
 logoutButton.addEventListener('click', async () => {
   try {
     if (state.sessionToken) {
@@ -1444,6 +1678,7 @@ logoutButton.addEventListener('click', async () => {
   state.snapshot = null;
   state.panelUsers = [];
   state.punishmentCandidates = [];
+  state.wantedListCandidates = [];
   updateRoleView();
   authOverlay.classList.remove('hidden');
   setAuthMode('owner');
@@ -1454,6 +1689,9 @@ refreshButton.addEventListener('click', async () => {
     await fetchDashboard({ manual: true });
     if (canAccessPunishmentPanel()) {
       await loadPunishmentCandidates();
+    }
+    if (state.sessionRole === 'owner' || state.sessionAccountType === 'policjant') {
+      await loadWantedListCandidates();
     }
     if (state.sessionRole === 'owner') {
       await loadPanelUsers();
@@ -1482,6 +1720,7 @@ setAuthMode(state.authMode);
 setCategory(state.currentCategory);
 earningsDateInput.disabled = true;
 updatePunishmentFormVisibility();
+updateWantedListFormVisibility();
 updateRoleView();
 
 boot().catch(error => {

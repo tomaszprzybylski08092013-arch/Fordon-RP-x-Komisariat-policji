@@ -58,6 +58,7 @@
         <button class="category-chip active" type="button" data-category="kartoteki">Kartoteka</button>
         <button class="category-chip" type="button" data-category="mandaty">Mandaty</button>
         <button class="category-chip" type="button" data-category="areszty">Areszty i wiezienia</button>
+        <button class="category-chip" type="button" data-category="listy-goncze">Listy goncze</button>
         <button class="category-chip" type="button" data-category="zarobek">Zobacz zarobek</button>
         <button class="category-chip" type="button" data-category="nadaj-kare">Nadaj kare</button>
         <button class="category-chip owner-only hidden" type="button" data-category="dziennik-zdarzen">Dziennik zdarzen</button>
@@ -87,6 +88,52 @@
             <span class="section-count" id="arrestsCount">0</span>
           </div>
           <div class="card-list" id="arrestsList"></div>
+        </div>
+      </section>
+
+      <section class="layout-grid category-section hidden" data-section="listy-goncze">
+        <div class="panel-card">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Listy goncze</p>
+              <h2>Aktywne i usuniete listy goncze</h2>
+            </div>
+            <span class="section-count" id="wantedListsCount">0</span>
+          </div>
+
+          <form class="editor-form" id="wantedListForm">
+            <div class="earnings-controls">
+              <div class="form-group">
+                <label for="wantedListTargetSelect">Uzytkownik</label>
+                <select id="wantedListTargetSelect" name="targetId"></select>
+              </div>
+
+              <div class="form-group">
+                <label for="wantedListActionSelect">Akcja</label>
+                <select id="wantedListActionSelect" name="action">
+                  <option value="nadaj">Nadaj list gonczy</option>
+                  <option value="usun">Usun list gonczy</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="wantedListImageInput">Zdjecie podejrzanego (URL)</label>
+                <input id="wantedListImageInput" name="imageUrl" type="url" placeholder="https://..." />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="wantedListReasonInput">Za co</label>
+              <textarea id="wantedListReasonInput" name="reason" rows="4" placeholder="Wpisz powod nadania albo usuniecia listu gonczego"></textarea>
+            </div>
+
+            <div class="form-actions">
+              <button class="primary-button" type="submit">Zapisz list gonczy</button>
+            </div>
+            <p class="form-error" id="wantedListError"></p>
+          </form>
+
+          <div class="card-list" id="wantedListsList"></div>
         </div>
       </section>
 

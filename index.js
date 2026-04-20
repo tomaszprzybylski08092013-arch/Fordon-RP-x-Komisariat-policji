@@ -49,6 +49,9 @@ const PANEL_PERMISSION_KEYS = [
   'viewAreszty',
   'editAreszty',
   'deleteAreszty',
+  'viewListyGoncze',
+  'issueListyGoncze',
+  'removeListyGoncze',
   'viewZarobek',
   'issueMandaty',
   'issueAreszty',
@@ -109,6 +112,12 @@ function ensureGuild(guildId) {
   cfg.arrestRoleIds = Array.isArray(cfg.arrestRoleIds) ? cfg.arrestRoleIds : [];
   cfg.arrestUserIds = Array.isArray(cfg.arrestUserIds) ? cfg.arrestUserIds : [];
   cfg.arrests = Array.isArray(cfg.arrests) ? cfg.arrests : [];
+  cfg.wantedListChannelId = cfg.wantedListChannelId ?? null;
+  cfg.wantedListIssueRoleIds = Array.isArray(cfg.wantedListIssueRoleIds) ? cfg.wantedListIssueRoleIds : [];
+  cfg.wantedListIssueUserIds = Array.isArray(cfg.wantedListIssueUserIds) ? cfg.wantedListIssueUserIds : [];
+  cfg.wantedListRemoveRoleIds = Array.isArray(cfg.wantedListRemoveRoleIds) ? cfg.wantedListRemoveRoleIds : [];
+  cfg.wantedListRemoveUserIds = Array.isArray(cfg.wantedListRemoveUserIds) ? cfg.wantedListRemoveUserIds : [];
+  cfg.wantedLists = Array.isArray(cfg.wantedLists) ? cfg.wantedLists : [];
   cfg.robloxNickChannelId = cfg.robloxNickChannelId ?? null;
   cfg.robloxNickVerifiedRoleId = cfg.robloxNickVerifiedRoleId ?? null;
   cfg.kartotekaChannelId = cfg.kartotekaChannelId ?? null;
@@ -144,6 +153,9 @@ function getDefaultPanelPermissions() {
     viewAreszty: false,
     editAreszty: false,
     deleteAreszty: false,
+    viewListyGoncze: false,
+    issueListyGoncze: false,
+    removeListyGoncze: false,
     viewZarobek: false,
     issueMandaty: false,
     issueAreszty: false,
@@ -184,6 +196,9 @@ function getPoliceDefaultPermissions() {
     viewAreszty: true,
     editAreszty: true,
     deleteAreszty: false,
+    viewListyGoncze: true,
+    issueListyGoncze: true,
+    removeListyGoncze: true,
     viewZarobek: true,
     issueMandaty: true,
     issueAreszty: true,
@@ -201,6 +216,9 @@ function getRestrictedUserPermissions() {
     viewAreszty: true,
     editAreszty: false,
     deleteAreszty: false,
+    viewListyGoncze: true,
+    issueListyGoncze: false,
+    removeListyGoncze: false,
     viewZarobek: false,
     issueMandaty: false,
     issueAreszty: false,
@@ -447,11 +465,23 @@ function canUsePunishmentPanel(session, permissions = null) {
   return Boolean(permissions?.issueMandaty || permissions?.issueAreszty || permissions?.issueWiezienia);
 }
 
+function canUseWantedListPanel(session, permissions = null) {
+  if (session?.role === 'owner') return true;
+  return Boolean(permissions?.issueListyGoncze || permissions?.removeListyGoncze);
+}
+
 function canIssuePunishmentType(session, permissions = null, type = '') {
   if (session?.role === 'owner') return true;
   if (type === 'mandat') return Boolean(permissions?.issueMandaty);
   if (type === 'areszt') return Boolean(permissions?.issueAreszty);
   if (type === 'wiezienie') return Boolean(permissions?.issueWiezienia);
+  return false;
+}
+
+function canManageWantedListAction(session, permissions = null, action = '') {
+  if (session?.role === 'owner') return true;
+  if (action === 'usun') return Boolean(permissions?.removeListyGoncze);
+  if (action === 'nadaj') return Boolean(permissions?.issueListyGoncze);
   return false;
 }
 
@@ -537,6 +567,20 @@ function hasKartotekaPermission(member, cfg) {
   return member.roles?.cache?.some(role => cfg.kartotekaRoleIds.includes(role.id)) ?? false;
 }
 
+function hasWantedListIssuePermission(member, cfg) {
+  if (!member) return false;
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
+  if (cfg.wantedListIssueUserIds.includes(member.id)) return true;
+  return member.roles?.cache?.some(role => cfg.wantedListIssueRoleIds.includes(role.id)) ?? false;
+}
+
+function hasWantedListRemovePermission(member, cfg) {
+  if (!member) return false;
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
+  if (cfg.wantedListRemoveUserIds.includes(member.id)) return true;
+  return member.roles?.cache?.some(role => cfg.wantedListRemoveRoleIds.includes(role.id)) ?? false;
+}
+
 function generateMandateId() {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let output = 'MANDAT-';
@@ -549,6 +593,15 @@ function generateMandateId() {
 function generateArrestId() {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let output = 'ARREST-';
+  for (let i = 0; i < 6; i++) {
+    output += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return output;
+}
+
+function generateWantedListId() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let output = 'LIST-';
   for (let i = 0; i < 6; i++) {
     output += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
@@ -583,6 +636,10 @@ function getMandateStatusLabel(status) {
 
 function getArrestTypeLabel(type) {
   return type === 'wiezienie' ? 'Pojscie do wiezienia' : 'Areszt';
+}
+
+function getWantedListStatusLabel(status) {
+  return status === 'usuniety' ? 'Usuniety' : 'Aktywny';
 }
 
 function getMandateComponents(
@@ -966,6 +1023,41 @@ function buildArrestEmbed(arrest) {
     .setTimestamp(new Date(arrest.createdAt));
 }
 
+function buildWantedListEmbed(entry) {
+  const isRemoved = entry.status === 'usuniety';
+  const fields = [
+    { name: 'ID listu', value: entry.id, inline: true },
+    { name: 'Podejrzany', value: `<@${entry.targetId}>`, inline: true },
+    { name: 'Status', value: getWantedListStatusLabel(entry.status), inline: true },
+    { name: 'Za co', value: entry.reason, inline: false },
+    { name: isRemoved ? 'Pierwotnie nadany przez' : 'Nadajacy', value: `<@${entry.issuerId}>`, inline: true },
+    { name: 'Data nadania', value: formatDateTime(entry.createdAt), inline: true }
+  ];
+
+  if (isRemoved) {
+    fields.push(
+      { name: 'Usuniety przez', value: entry.removedById ? `<@${entry.removedById}>` : 'Nieznany', inline: true },
+      { name: 'Powod usuniecia', value: entry.removeReason || 'Nie podano', inline: false },
+      { name: 'Data usuniecia', value: entry.removedAt ? formatDateTime(entry.removedAt) : 'Nieznana', inline: true }
+    );
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(isRemoved ? Colors.Green : Colors.Red)
+    .setTitle(isRemoved ? 'List gonczy usuniety' : 'List gonczy')
+    .addFields(fields)
+    .setTimestamp(new Date(isRemoved ? entry.removedAt || entry.createdAt : entry.createdAt));
+
+  const imageUrl = entry.status === 'usuniety'
+    ? (entry.removeImageUrl || entry.imageUrl || '')
+    : (entry.imageUrl || '');
+  if (imageUrl) {
+    embed.setImage(imageUrl);
+  }
+
+  return embed;
+}
+
 async function createMandateCase({ guild, cfg, issuerMember, targetMember, amount, penaltyPoints = null, reason, description = '' }) {
   const issuer = issuerMember.user;
   const target = targetMember.user;
@@ -1090,6 +1182,85 @@ async function createArrestCase({ guild, cfg, issuerMember, targetMember, reason
   return { arrestRecord };
 }
 
+async function createWantedListRecord({ guild, cfg, issuerMember, targetMember, reason, imageUrl = '' }) {
+  const existingActive = cfg.wantedLists.find(item => item.targetId === targetMember.id && item.status === 'aktywny');
+  if (existingActive) {
+    const error = new Error('Ta osoba ma juz aktywny list gonczy.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const issuer = issuerMember.user;
+  const target = targetMember.user;
+  const record = {
+    id: generateWantedListId(),
+    issuerId: issuer.id,
+    issuerDisplayName: issuerMember.displayName ?? issuer.globalName ?? issuer.username,
+    issuerUsername: issuer.username,
+    targetId: target.id,
+    targetDisplayName: targetMember.displayName ?? target.globalName ?? target.username,
+    targetUsername: target.username,
+    reason,
+    imageUrl: imageUrl || target.displayAvatarURL?.({ extension: 'png', size: 512 }) || '',
+    status: 'aktywny',
+    createdAt: Date.now(),
+    removedAt: null,
+    removedById: null,
+    removedByDisplayName: null,
+    removedByUsername: null,
+    removeReason: '',
+    removeImageUrl: ''
+  };
+
+  cfg.wantedLists.unshift(record);
+  cfg.wantedLists = cfg.wantedLists.slice(0, 300);
+  syncWantedListToKartoteka(cfg, record, {
+    id: target.id,
+    username: target.username,
+    displayName: targetMember.displayName ?? target.globalName ?? target.username
+  });
+  saveConfig();
+
+  const infoChannel = await guild.channels.fetch(cfg.wantedListChannelId).catch(() => null);
+  if (isSupportedTextChannel(infoChannel) && typeof infoChannel.send === 'function') {
+    await infoChannel.send({ embeds: [buildWantedListEmbed(record)] }).catch(() => {});
+  }
+
+  return record;
+}
+
+async function removeWantedListRecord({ guild, cfg, removerMember, targetMember, reason, imageUrl = '' }) {
+  const record = cfg.wantedLists.find(item => item.targetId === targetMember.id && item.status === 'aktywny');
+  if (!record) {
+    const error = new Error('Ta osoba nie ma aktywnego listu gonczego.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const remover = removerMember.user;
+  record.status = 'usuniety';
+  record.removedAt = Date.now();
+  record.removedById = remover.id;
+  record.removedByDisplayName = removerMember.displayName ?? remover.globalName ?? remover.username;
+  record.removedByUsername = remover.username;
+  record.removeReason = reason;
+  record.removeImageUrl = imageUrl || record.imageUrl || targetMember.user.displayAvatarURL?.({ extension: 'png', size: 512 }) || '';
+
+  syncWantedListToKartoteka(cfg, record, {
+    id: targetMember.id,
+    username: targetMember.user.username,
+    displayName: targetMember.displayName ?? targetMember.user.globalName ?? targetMember.user.username
+  });
+  saveConfig();
+
+  const infoChannel = await guild.channels.fetch(cfg.wantedListChannelId).catch(() => null);
+  if (isSupportedTextChannel(infoChannel) && typeof infoChannel.send === 'function') {
+    await infoChannel.send({ embeds: [buildWantedListEmbed(record)] }).catch(() => {});
+  }
+
+  return record;
+}
+
 function getOrCreateKartoteka(cfg, userData) {
   let kartoteka = cfg.kartoteki.find(entry => entry.userId === userData.id);
   if (!kartoteka) {
@@ -1158,6 +1329,33 @@ function syncArrestToKartoteka(cfg, arrest, userData) {
   return kartoteka;
 }
 
+function syncWantedListToKartoteka(cfg, wantedList, userData) {
+  const kartoteka = getOrCreateKartoteka(cfg, userData);
+  let entry = kartoteka.entries.find(item => item.type === 'wanted-list' && item.wantedListId === wantedList.id);
+
+  if (!entry) {
+    entry = {
+      id: generateKartotekaEntryId(),
+      type: 'wanted-list',
+      wantedListId: wantedList.id,
+      createdAt: wantedList.createdAt,
+      updatedAt: Date.now()
+    };
+    kartoteka.entries.unshift(entry);
+  }
+
+  entry.issuerId = wantedList.issuerId;
+  entry.reason = wantedList.reason;
+  entry.imageUrl = wantedList.imageUrl || '';
+  entry.status = wantedList.status;
+  entry.removedAt = wantedList.removedAt ?? null;
+  entry.removedById = wantedList.removedById ?? null;
+  entry.removeReason = wantedList.removeReason ?? '';
+  entry.removeImageUrl = wantedList.removeImageUrl ?? '';
+  entry.updatedAt = Date.now();
+  return kartoteka;
+}
+
 function formatDateTime(timestamp) {
   return new Intl.DateTimeFormat('pl-PL', {
     day: '2-digit',
@@ -1171,11 +1369,13 @@ function formatDateTime(timestamp) {
 function buildKartotekaEmbed(kartoteka) {
   const mandateEntries = kartoteka.entries.filter(entry => entry.type === 'mandat');
   const arrestEntries = kartoteka.entries.filter(entry => entry.type === 'arrest');
+  const wantedListEntries = kartoteka.entries.filter(entry => entry.type === 'wanted-list');
   const paidCount = mandateEntries.filter(entry => entry.status === 'zaplacony').length;
   const totalPenaltyPoints = mandateEntries.reduce(
     (sum, entry) => sum + (typeof entry.penaltyPoints === 'number' ? entry.penaltyPoints : 0),
     0
   );
+  const activeWantedListCount = wantedListEntries.filter(entry => entry.status === 'aktywny').length;
 
   const fields = [
     { name: 'Osoba', value: `<@${kartoteka.userId}>`, inline: true },
@@ -1184,7 +1384,8 @@ function buildKartotekaEmbed(kartoteka) {
     { name: 'Liczba mandatow', value: String(mandateEntries.length), inline: true },
     { name: 'Mandaty oplacone', value: String(paidCount), inline: true },
     { name: 'Suma punktow karnych', value: String(totalPenaltyPoints), inline: true },
-    { name: 'Liczba aresztow', value: String(arrestEntries.length), inline: true }
+    { name: 'Liczba aresztow', value: String(arrestEntries.length), inline: true },
+    { name: 'Listy goncze', value: `${wantedListEntries.length} (aktywne: ${activeWantedListCount})`, inline: true }
   ];
 
   fields.push({
@@ -1231,6 +1432,29 @@ function buildKartotekaEmbed(kartoteka) {
       ? `Historia aresztow (ostatnie ${latestArrests.length} z ${arrestEntries.length})`
       : 'Historia aresztow',
     value: arrestHistoryValue.slice(0, 1024),
+    inline: false
+  });
+
+  const latestWantedLists = wantedListEntries.slice(0, 8);
+  const wantedListHistoryValue = latestWantedLists.length
+    ? latestWantedLists.map(entry => {
+      const removalText = entry.status === 'usuniety'
+        ? `Usuniety przez: <@${entry.removedById}> | ${entry.removeReason || 'Bez powodu'}`
+        : 'List nadal aktywny';
+      return [
+        `**${entry.wantedListId}** | ${getWantedListStatusLabel(entry.status)}`,
+        `Za co: ${entry.reason}`,
+        `Nadal: <@${entry.issuerId}> | ${formatDateTime(entry.createdAt)}`,
+        removalText
+      ].join('\n');
+    }).join('\n\n')
+    : 'Brak wpisow listu gonczego.';
+
+  fields.push({
+    name: latestWantedLists.length < wantedListEntries.length
+      ? `Historia listow gonczych (ostatnie ${latestWantedLists.length} z ${wantedListEntries.length})`
+      : 'Historia listow gonczych',
+    value: wantedListHistoryValue.slice(0, 1024),
     inline: false
   });
 
@@ -1289,10 +1513,33 @@ function serializeArrest(arrest) {
   };
 }
 
+function serializeWantedList(entry) {
+  return {
+    id: entry.id,
+    issuerId: entry.issuerId,
+    issuerLabel: entry.issuerDisplayName ?? entry.issuerUsername ?? entry.issuerId,
+    targetId: entry.targetId,
+    targetLabel: entry.targetDisplayName ?? entry.targetUsername ?? entry.targetId,
+    reason: entry.reason,
+    imageUrl: entry.imageUrl || '',
+    status: entry.status,
+    statusLabel: getWantedListStatusLabel(entry.status),
+    removedAt: entry.removedAt ?? null,
+    removedAtLabel: entry.removedAt ? formatDateTime(entry.removedAt) : null,
+    removedById: entry.removedById ?? null,
+    removedByLabel: entry.removedByDisplayName ?? entry.removedByUsername ?? entry.removedById ?? null,
+    removeReason: entry.removeReason ?? '',
+    removeImageUrl: entry.removeImageUrl ?? '',
+    createdAt: entry.createdAt,
+    createdAtLabel: formatDateTime(entry.createdAt)
+  };
+}
+
 function serializeKartoteka(kartoteka) {
   const entries = Array.isArray(kartoteka.entries) ? kartoteka.entries : [];
   const mandateEntries = entries.filter(entry => entry.type === 'mandat');
   const arrestEntries = entries.filter(entry => entry.type === 'arrest');
+  const wantedListEntries = entries.filter(entry => entry.type === 'wanted-list');
 
   return {
     userId: kartoteka.userId,
@@ -1305,15 +1552,19 @@ function serializeKartoteka(kartoteka) {
       mandateCount: mandateEntries.length,
       paidMandateCount: mandateEntries.filter(entry => entry.status === 'zaplacony').length,
       penaltyPointsTotal: mandateEntries.reduce((sum, entry) => sum + (typeof entry.penaltyPoints === 'number' ? entry.penaltyPoints : 0), 0),
-      arrestCount: arrestEntries.length
+      arrestCount: arrestEntries.length,
+      wantedListCount: wantedListEntries.length,
+      activeWantedListCount: wantedListEntries.filter(entry => entry.status === 'aktywny').length
     },
     entries: entries.map(entry => ({
       ...entry,
       description: entry.description ?? '',
       kindLabel: entry.type === 'arrest' ? getArrestTypeLabel(entry.kind) : null,
       statusLabel: entry.type === 'mandat' ? getMandateStatusLabel(entry.status) : null,
+      wantedListStatusLabel: entry.type === 'wanted-list' ? getWantedListStatusLabel(entry.status) : null,
       createdAtLabel: entry.createdAt ? formatDateTime(entry.createdAt) : null,
-      updatedAtLabel: entry.updatedAt ? formatDateTime(entry.updatedAt) : null
+      updatedAtLabel: entry.updatedAt ? formatDateTime(entry.updatedAt) : null,
+      removedAtLabel: entry.removedAt ? formatDateTime(entry.removedAt) : null
     }))
   };
 }
@@ -1322,6 +1573,11 @@ function serializeDashboardState(guildId, panelSession = null, panelPermissions 
   const cfg = ensureGuild(guildId);
   const mandates = [...cfg.mandates].sort((a, b) => b.createdAt - a.createdAt);
   const arrests = [...cfg.arrests].sort((a, b) => b.createdAt - a.createdAt);
+  const wantedLists = [...cfg.wantedLists].sort((a, b) => {
+    const aTime = a.removedAt || a.createdAt || 0;
+    const bTime = b.removedAt || b.createdAt || 0;
+    return bTime - aTime;
+  });
   const kartoteki = [...cfg.kartoteki].sort((a, b) => {
     const aUpdated = Math.max(a.createdAt || 0, ...(a.entries || []).map(entry => entry.updatedAt || entry.createdAt || 0));
     const bUpdated = Math.max(b.createdAt || 0, ...(b.entries || []).map(entry => entry.updatedAt || entry.createdAt || 0));
@@ -1332,11 +1588,14 @@ function serializeDashboardState(guildId, panelSession = null, panelPermissions 
   const isRestrictedUser = panelSession?.role === 'user' && panelSession.accountType === 'uzytkownik' && panelSession.discordUserId;
   const canSeeMandates = canSeeEverything || panelPermissions?.viewMandaty || panelPermissions?.editMandaty || panelPermissions?.deleteMandaty;
   const canSeeArrests = canSeeEverything || panelPermissions?.viewAreszty || panelPermissions?.editAreszty || panelPermissions?.deleteAreszty;
+  const canSeeWantedLists = canSeeEverything || panelPermissions?.viewListyGoncze || panelPermissions?.issueListyGoncze || panelPermissions?.removeListyGoncze;
   const canSeeKartoteki = canSeeEverything || panelPermissions?.viewKartoteka || panelPermissions?.editKartoteka;
   const mandateBase = isRestrictedUser ? mandates.filter(mandate => mandate.targetId === panelSession.discordUserId) : mandates;
   const visibleMandates = canSeeMandates ? mandateBase : [];
   const arrestBase = isRestrictedUser ? arrests.filter(arrest => arrest.targetId === panelSession.discordUserId) : arrests;
   const visibleArrests = canSeeArrests ? arrestBase : [];
+  const wantedListBase = isRestrictedUser ? wantedLists.filter(entry => entry.targetId === panelSession.discordUserId) : wantedLists;
+  const visibleWantedLists = canSeeWantedLists ? wantedListBase : [];
   const visibleKartoteki = isRestrictedUser ? [] : (canSeeKartoteki ? kartoteki : []);
 
   return {
@@ -1352,10 +1611,13 @@ function serializeDashboardState(guildId, panelSession = null, panelPermissions 
         .filter(mandate => mandate.status === 'zaplacony')
         .reduce((sum, mandate) => sum + (Number(mandate.amount) || 0), 0),
       arrestCount: visibleArrests.length,
+      wantedListCount: visibleWantedLists.length,
+      activeWantedListCount: visibleWantedLists.filter(entry => entry.status === 'aktywny').length,
       kartotekaCount: visibleKartoteki.length
     },
     mandates: visibleMandates.map(serializeMandate),
     arrests: visibleArrests.map(serializeArrest),
+    wantedLists: visibleWantedLists.map(serializeWantedList),
     kartoteki: visibleKartoteki.map(serializeKartoteka)
   };
 }
@@ -1470,6 +1732,20 @@ async function getPunishmentCandidates(guildId) {
     }))
     .sort((a, b) => a.label.localeCompare(b.label, 'pl'))
     .slice(0, 1000);
+}
+
+async function resolvePanelActorId(guild, preferredId = '') {
+  if (preferredId) {
+    const preferredMember = guild.members.cache.get(preferredId) ?? await guild.members.fetch(preferredId).catch(() => null);
+    if (preferredMember) return preferredMember.id;
+  }
+
+  for (const ownerId of CONFIG_OWNER_IDS) {
+    const ownerMember = guild.members.cache.get(ownerId) ?? await guild.members.fetch(ownerId).catch(() => null);
+    if (ownerMember) return ownerMember.id;
+  }
+
+  return '';
 }
 
 function startPanelServer() {
@@ -1775,6 +2051,15 @@ function startPanelServer() {
     });
   });
 
+  app.get('/api/dashboard/:guildId/wanted-list-candidates', requirePanelOfficer, async (req, res) => {
+    if (!canUseWantedListPanel(req.panelSession, req.panelPermissions)) {
+      res.status(403).json({ error: 'Brak permisji do obslugi listow gonczych.' });
+      return;
+    }
+    const candidates = await getPunishmentCandidates(req.params.guildId);
+    res.json({ candidates });
+  });
+
   app.get('/api/dashboard/:guildId/punishment-candidates', requirePanelOfficer, async (req, res) => {
     if (!canUsePunishmentPanel(req.panelSession, req.panelPermissions)) {
       res.status(403).json({ error: 'Brak permisji do nadawania kar.' });
@@ -1793,7 +2078,7 @@ function startPanelServer() {
       return;
     }
 
-    const issuerId = req.panelSession?.role === 'owner'
+    let issuerId = req.panelSession?.role === 'owner'
       ? String(req.body.issuerId || '').trim()
       : String(req.panelSession?.discordUserId || '').trim();
     const targetId = String(req.body.targetId || '').trim();
@@ -1803,6 +2088,8 @@ function startPanelServer() {
     const amountRaw = req.body.amount;
     const penaltyPointsRaw = req.body.penaltyPoints;
     const duration = String(req.body.duration || '').trim();
+
+    issuerId = await resolvePanelActorId(guild, issuerId);
 
     if (!issuerId || !targetId) {
       res.status(400).json({ error: 'Musisz wybrac osobe nadajaca kare i osobe karana.' });
@@ -1907,6 +2194,90 @@ function startPanelServer() {
       type: normalizedType,
       id: arrestRecord.id
     });
+  });
+
+  app.post('/api/dashboard/:guildId/wanted-lists', requirePanelOfficer, async (req, res) => {
+    const cfg = ensureGuild(req.params.guildId);
+    const guild = client.guilds.cache.get(req.params.guildId) ?? await client.guilds.fetch(req.params.guildId).catch(() => null);
+    if (!guild) {
+      res.status(404).json({ error: 'Nie znaleziono serwera.' });
+      return;
+    }
+    if (!cfg.wantedListChannelId) {
+      res.status(400).json({ error: 'Najpierw ustaw kanal listu gonczego.' });
+      return;
+    }
+
+    const action = String(req.body.action || '').trim().toLowerCase();
+    let actorId = req.panelSession?.role === 'owner'
+      ? String(req.body.actorId || '').trim()
+      : String(req.panelSession?.discordUserId || '').trim();
+    const targetId = String(req.body.targetId || '').trim();
+    const reason = String(req.body.reason || '').trim();
+    const imageUrl = String(req.body.imageUrl || '').trim();
+
+    if (!['nadaj', 'usun'].includes(action)) {
+      res.status(400).json({ error: 'Niepoprawna akcja listu gonczego.' });
+      return;
+    }
+    if (!canManageWantedListAction(req.panelSession, req.panelPermissions, action)) {
+      res.status(403).json({ error: 'Brak permisji do tej akcji listu gonczego.' });
+      return;
+    }
+    actorId = await resolvePanelActorId(guild, actorId);
+
+    if (!actorId || !targetId) {
+      res.status(400).json({ error: 'Musisz wybrac osobe obslugujaca i osobe podejrzana.' });
+      return;
+    }
+    if (!reason) {
+      res.status(400).json({ error: 'Musisz podac powod.' });
+      return;
+    }
+
+    const actorMember = await guild.members.fetch(actorId).catch(() => null);
+    const targetMember = await guild.members.fetch(targetId).catch(() => null);
+    if (!actorMember || !targetMember) {
+      res.status(404).json({ error: 'Nie znaleziono jednego z uzytkownikow na serwerze.' });
+      return;
+    }
+
+    try {
+      if (action === 'nadaj') {
+        const record = await createWantedListRecord({
+          guild,
+          cfg,
+          issuerMember: actorMember,
+          targetMember,
+          reason,
+          imageUrl
+        });
+        addPanelActivityLog(req.panelSession, 'Nadanie listu gonczego', `Nadano list gonczy ${record.id} dla ${record.targetDisplayName}.`, {
+          guildId: req.params.guildId,
+          wantedListId: record.id
+        });
+        saveConfig();
+        res.json({ ok: true, action, wantedList: serializeWantedList(record) });
+        return;
+      }
+
+      const record = await removeWantedListRecord({
+        guild,
+        cfg,
+        removerMember: actorMember,
+        targetMember,
+        reason,
+        imageUrl
+      });
+      addPanelActivityLog(req.panelSession, 'Usuniecie listu gonczego', `Usunieto list gonczy ${record.id} dla ${record.targetDisplayName}.`, {
+        guildId: req.params.guildId,
+        wantedListId: record.id
+      });
+      saveConfig();
+      res.json({ ok: true, action, wantedList: serializeWantedList(record) });
+    } catch (error) {
+      res.status(error.statusCode || 400).json({ error: error.message || 'Nie udalo sie obsluzyc listu gonczego.' });
+    }
   });
 
   app.post('/api/dashboard/:guildId/mandates/:mandateId/action', async (req, res) => {
@@ -2271,6 +2642,69 @@ async function registerCommands() {
       ]
     },
     {
+      name: 'ustawkanallistgonczy',
+      description: 'Ustaw kanal informacji o listach gonczych',
+      options: [
+        { name: 'kanal', description: 'Kanal, gdzie maja przychodzic listy goncze', type: 7, required: true }
+      ]
+    },
+    {
+      name: 'listgonczyperrmison',
+      description: 'Lista lub nadanie permisji do nadawania listu gonczego',
+      options: [
+        {
+          name: 'akcja',
+          description: 'list/dodaj/usun',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'list', value: 'list' },
+            { name: 'dodaj', value: 'dodaj' },
+            { name: 'usun', value: 'usun' }
+          ]
+        },
+        { name: 'rola', description: 'Rola z permisja do listu gonczego', type: 8, required: false },
+        { name: 'uzytkownik', description: 'Uzytkownik z permisja do listu gonczego', type: 6, required: false }
+      ]
+    },
+    {
+      name: 'usunlistgonczyperrmison',
+      description: 'Lista lub nadanie permisji do usuwania listu gonczego',
+      options: [
+        {
+          name: 'akcja',
+          description: 'list/dodaj/usun',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'list', value: 'list' },
+            { name: 'dodaj', value: 'dodaj' },
+            { name: 'usun', value: 'usun' }
+          ]
+        },
+        { name: 'rola', description: 'Rola z permisja do usuwania listu gonczego', type: 8, required: false },
+        { name: 'uzytkownik', description: 'Uzytkownik z permisja do usuwania listu gonczego', type: 6, required: false }
+      ]
+    },
+    {
+      name: 'listgonczy',
+      description: 'Nadaj list gonczy',
+      options: [
+        { name: 'komu', description: 'Podejrzany z Discorda', type: 6, required: true },
+        { name: 'powod', description: 'Za co jest list gonczy', type: 3, required: true },
+        { name: 'zdjecie', description: 'Zdjecie podejrzanego', type: 11, required: true }
+      ]
+    },
+    {
+      name: 'usunlistgonczy',
+      description: 'Usun aktywny list gonczy',
+      options: [
+        { name: 'komu', description: 'Podejrzany z Discorda', type: 6, required: true },
+        { name: 'powod', description: 'Powod usuniecia listu gonczego', type: 3, required: true },
+        { name: 'zdjecie', description: 'Zdjecie podejrzanego', type: 11, required: true }
+      ]
+    },
+    {
       name: 'sprawdziloscmandatow',
       description: 'Sprawdz ilosc mandatow i zarobek z mandatow dla osoby z Discorda i daty',
       options: [
@@ -2459,6 +2893,74 @@ client.on('interactionCreate', async interaction => {
         saveConfig();
         const changed = [role ? `<@&${role.id}>` : null, user ? `<@${user.id}>` : null].filter(Boolean).join(', ');
         await interaction.reply({ content: `Zaktualizowano permisje aresztow dla: ${changed}`, flags: 64 });
+        return;
+      }
+
+      if (interaction.commandName === 'ustawkanallistgonczy') {
+        if (!isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Tej komendy moga uzywac tylko wybrane osoby.', flags: 64 });
+          return;
+        }
+
+        const wantedListChannel = interaction.options.getChannel('kanal', true);
+        if (!isSupportedTextChannel(wantedListChannel)) {
+          await interaction.reply({ content: 'Wybierz kanal tekstowy.', flags: 64 });
+          return;
+        }
+
+        cfg.wantedListChannelId = wantedListChannel.id;
+        saveConfig();
+        await interaction.reply({ content: `Listy goncze beda wysylane na <#${wantedListChannel.id}>.`, flags: 64 });
+        return;
+      }
+
+      if (interaction.commandName === 'listgonczyperrmison') {
+        if (!isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Tej komendy moga uzywac tylko wybrane osoby.', flags: 64 });
+          return;
+        }
+
+        const action = interaction.options.getString('akcja', true);
+        const role = interaction.options.getRole('rola');
+        const user = interaction.options.getUser('uzytkownik');
+        if (action === 'list') {
+          await interaction.reply({ content: formatPermissionList(cfg.wantedListIssueRoleIds, cfg.wantedListIssueUserIds), flags: 64 });
+          return;
+        }
+        if (!role && !user) {
+          await interaction.reply({ content: 'Podaj role albo uzytkownika.', flags: 64 });
+          return;
+        }
+        if (role) updatePermissionEntries(cfg.wantedListIssueRoleIds, role.id, action);
+        if (user) updatePermissionEntries(cfg.wantedListIssueUserIds, user.id, action);
+        saveConfig();
+        const changed = [role ? `<@&${role.id}>` : null, user ? `<@${user.id}>` : null].filter(Boolean).join(', ');
+        await interaction.reply({ content: `Zaktualizowano permisje listu gonczego dla: ${changed}`, flags: 64 });
+        return;
+      }
+
+      if (interaction.commandName === 'usunlistgonczyperrmison') {
+        if (!isConfigOwner(interaction.user.id)) {
+          await interaction.reply({ content: 'Tej komendy moga uzywac tylko wybrane osoby.', flags: 64 });
+          return;
+        }
+
+        const action = interaction.options.getString('akcja', true);
+        const role = interaction.options.getRole('rola');
+        const user = interaction.options.getUser('uzytkownik');
+        if (action === 'list') {
+          await interaction.reply({ content: formatPermissionList(cfg.wantedListRemoveRoleIds, cfg.wantedListRemoveUserIds), flags: 64 });
+          return;
+        }
+        if (!role && !user) {
+          await interaction.reply({ content: 'Podaj role albo uzytkownika.', flags: 64 });
+          return;
+        }
+        if (role) updatePermissionEntries(cfg.wantedListRemoveRoleIds, role.id, action);
+        if (user) updatePermissionEntries(cfg.wantedListRemoveUserIds, user.id, action);
+        saveConfig();
+        const changed = [role ? `<@&${role.id}>` : null, user ? `<@${user.id}>` : null].filter(Boolean).join(', ');
+        await interaction.reply({ content: `Zaktualizowano permisje usuwania listu gonczego dla: ${changed}`, flags: 64 });
         return;
       }
 
@@ -2840,6 +3342,104 @@ client.on('interactionCreate', async interaction => {
           content: `Wystawiono ${kind === 'wiezienie' ? 'pojscie do wiezienia' : 'areszt'} ${arrestId} dla <@${target.id}>.`,
           flags: 64
         });
+        return;
+      }
+
+      if (interaction.commandName === 'listgonczy') {
+        if (!cfg.wantedListChannelId) {
+          await interaction.reply({ content: 'Najpierw ustaw kanal komenda /ustawkanallistgonczy.', flags: 64 });
+          return;
+        }
+        if (!hasWantedListIssuePermission(interaction.member, cfg)) {
+          await interaction.reply({ content: 'Brak uprawnien do nadawania listu gonczego.', flags: 64 });
+          return;
+        }
+
+        const target = interaction.options.getUser('komu', true);
+        const reason = interaction.options.getString('powod', true).trim();
+        const attachment = interaction.options.getAttachment('zdjecie', true);
+
+        if (target.bot) {
+          await interaction.reply({ content: 'Nie mozesz nadac listu gonczego botowi.', flags: 64 });
+          return;
+        }
+        if (!reason) {
+          await interaction.reply({ content: 'Musisz podac powod listu gonczego.', flags: 64 });
+          return;
+        }
+
+        const guild = interaction.guild;
+        const issuerMember = interaction.member;
+        const targetMember = await guild.members.fetch(target.id).catch(() => null);
+        if (!targetMember) {
+          await interaction.reply({ content: 'Nie znalazlem tej osoby na serwerze.', flags: 64 });
+          return;
+        }
+
+        try {
+          const record = await createWantedListRecord({
+            guild,
+            cfg,
+            issuerMember,
+            targetMember,
+            reason,
+            imageUrl: attachment.url
+          });
+
+          await interaction.reply({
+            content: `Nadano list gonczy ${record.id} dla <@${target.id}>.`,
+            flags: 64
+          });
+        } catch (error) {
+          await interaction.reply({ content: error.message || 'Nie udalo sie nadac listu gonczego.', flags: 64 });
+        }
+        return;
+      }
+
+      if (interaction.commandName === 'usunlistgonczy') {
+        if (!cfg.wantedListChannelId) {
+          await interaction.reply({ content: 'Najpierw ustaw kanal komenda /ustawkanallistgonczy.', flags: 64 });
+          return;
+        }
+        if (!hasWantedListRemovePermission(interaction.member, cfg)) {
+          await interaction.reply({ content: 'Brak uprawnien do usuwania listu gonczego.', flags: 64 });
+          return;
+        }
+
+        const target = interaction.options.getUser('komu', true);
+        const reason = interaction.options.getString('powod', true).trim();
+        const attachment = interaction.options.getAttachment('zdjecie', true);
+
+        if (!reason) {
+          await interaction.reply({ content: 'Musisz podac powod usuniecia listu gonczego.', flags: 64 });
+          return;
+        }
+
+        const guild = interaction.guild;
+        const removerMember = interaction.member;
+        const targetMember = await guild.members.fetch(target.id).catch(() => null);
+        if (!targetMember) {
+          await interaction.reply({ content: 'Nie znalazlem tej osoby na serwerze.', flags: 64 });
+          return;
+        }
+
+        try {
+          const record = await removeWantedListRecord({
+            guild,
+            cfg,
+            removerMember,
+            targetMember,
+            reason,
+            imageUrl: attachment.url
+          });
+
+          await interaction.reply({
+            content: `Usunieto list gonczy ${record.id} dla <@${target.id}>.`,
+            flags: 64
+          });
+        } catch (error) {
+          await interaction.reply({ content: error.message || 'Nie udalo sie usunac listu gonczego.', flags: 64 });
+        }
         return;
       }
 
